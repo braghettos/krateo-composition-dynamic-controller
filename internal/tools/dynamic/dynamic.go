@@ -38,7 +38,15 @@ func IsNamespaced(mapper meta.RESTMapper, gvk schema.GroupVersionKind) (bool, er
 	}
 	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		return false, err
+		if dm, ok := mapper.(interface{ Reset() }); ok {
+			dm.Reset()
+			mapping, err = mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+			if err != nil {
+				return false, err
+			}
+		} else {
+			return false, err
+		}
 	}
 
 	if mapping.Scope.Name() == meta.RESTScopeNameRoot {

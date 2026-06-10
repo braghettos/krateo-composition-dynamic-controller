@@ -1,6 +1,7 @@
 package dynamic
 
 import (
+	"fmt"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -190,6 +191,50 @@ func TestIsNamespaced_WithMockMapper(t *testing.T) {
 				t.Errorf("IsNamespaced() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+type MockResettableMapper struct {
+	*MockRESTMapper
+	resetCalled bool
+	failFirst   bool
+}
+
+func (m *MockResettableMapper) Reset() {
+	m.resetCalled = true
+	m.err = nil
+}
+
+func (m *MockResettableMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
+	if m.failFirst && !m.resetCalled {
+		return nil, fmt.Errorf("no matches for kind")
+	}
+	return m.MockRESTMapper.RESTMapping(gk, versions...)
+}
+
+func TestIsNamespaced_WithCacheReset(t *testing.T) {
+	gvk := schema.GroupVersionKind{
+		Group:   "example.com",
+		Version: "v1",
+		Kind:    "Example",
+	}
+
+	mock := &MockResettableMapper{
+		MockRESTMapper: &MockRESTMapper{
+			scopeName: meta.RESTScopeNameNamespace,
+		},
+		failFirst: true,
+	}
+
+	got, err := IsNamespaced(mock, gvk)
+	if err != nil {
+		t.Errorf("IsNamespaced() unexpected error after reset = %v", err)
+	}
+	if got != true {
+		t.Errorf("IsNamespaced() = %v, want %v", got, true)
+	}
+	if !mock.resetCalled {
+		t.Error("IsNamespaced() did not call Reset() on mapper")
 	}
 }
 
