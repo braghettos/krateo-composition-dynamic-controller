@@ -29,7 +29,6 @@ import (
 	"github.com/krateoplatformops/plumbing/kubeutil/event"
 	"github.com/krateoplatformops/plumbing/kubeutil/eventrecorder"
 	"github.com/krateoplatformops/plumbing/ptr"
-	prettylog "github.com/krateoplatformops/plumbing/slogs/pretty"
 
 	"github.com/krateoplatformops/unstructured-runtime/pkg/logging"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/pluralizer"
@@ -102,16 +101,22 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 
-	lh := prettylog.New(&slog.HandlerOptions{
+	// JSON logs on stderr, compatible with logs-ingester: each line is a single JSON
+	// object with a canonical "timestamp" field in RFC3339Nano UTC. See
+	// docs/logs-ingester-compatibility.md.
+	lh := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     logLevel,
 		AddSource: false,
-	},
-		prettylog.WithDestinationWriter(os.Stderr),
-		prettylog.WithColor(),
-		prettylog.WithOutputEmptyAttrs(),
-	)
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.String("timestamp", a.Value.Time().UTC().Format(time.RFC3339Nano))
+			}
+			return a
+		},
+	})
+	sl := slog.New(lh).With(slog.String("service", serviceName))
 
-	log := logging.NewLogrLogger(logr.FromSlogHandler(slog.New(lh).Handler()))
+	log := logging.NewLogrLogger(logr.FromSlogHandler(sl.Handler()))
 
 	// Kubernetes configuration
 	var cfg *rest.Config
