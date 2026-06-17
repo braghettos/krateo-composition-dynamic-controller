@@ -227,6 +227,13 @@ func main() {
 		log.Error(err, "Creating RESTMapper.")
 		os.Exit(1)
 	}
+	// Keep the RESTMapper's cached discovery fresh: watch CustomResourceDefinition events
+	// and invalidate on any change, so newly-registered CRDs/versions (e.g. component CRDs
+	// generated mid-rollout, or the `inst.crdExists` Pass-B gate) are visible without a
+	// controller restart. Non-fatal: IsNamespaced still reactively resets on lookup miss.
+	if err := dynamic.WatchCRDsAndInvalidate(ctx, cfg, mapper, log); err != nil {
+		log.Error(err, "Starting CustomResourceDefinition watch for discovery invalidation; continuing without it.")
+	}
 	apiRecorder := event.NewAPIRecorder(rec)
 	if apiRecorder == nil {
 		log.Error(fmt.Errorf("creating API recorder"), "API recorder is nil, events will not be recorded.")
