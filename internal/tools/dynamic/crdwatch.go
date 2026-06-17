@@ -20,10 +20,12 @@ var crdGVR = schema.GroupVersionResource{
 	Resource: "customresourcedefinitions",
 }
 
-// crdInvalidateDebounce coalesces bursts of CRD events (e.g. a Pass-A render that
-// registers many component CRDs at once, or the informer's initial list) into a
-// single discovery invalidation.
-const crdInvalidateDebounce = 2 * time.Second
+// crdInvalidateWindow coalesces bursts of CRD events (e.g. a Pass-A render that registers
+// many component CRDs at once, or the informer's initial list) into a single discovery
+// invalidation. It is a FIXED window measured from the first event of a burst (a throttle,
+// not an extending debounce) so that continuous CRD churn still invalidates at least once
+// per window — bounding worst-case discovery staleness to this duration.
+const crdInvalidateWindow = 2 * time.Second
 
 // WatchCRDsAndInvalidate watches CustomResourceDefinition events and invalidates the
 // RESTMapper's cached discovery whenever a CRD is added, updated, or deleted.
@@ -78,9 +80,21 @@ func WatchCRDsAndInvalidate(ctx context.Context, rc *rest.Config, mapper meta.RE
 
 	go informer.Run(ctx.Done())
 
-	// Debounced invalidation loop: on a trigger, wait out a quiet window (draining any
-	// further triggers) and then Reset() once.
+	// Coalescing invalidation loop: on the first trigger of a burst, open a fixed window,
+	// drain any further triggers that arrive during it, then Reset() once at the end.
 	go func() {
+		// Surface a missing/denied watch instead of silently degrading to manual restarts.
+		if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+			if log != nil {
+				log.Info("CustomResourceDefinition watch did not sync; discovery auto-invalidation inactive " +
+					"(falling back to reactive reset — check RBAC: get;list;watch customresourcedefinitions.apiextensions.k8s.io)")
+			}
+			return
+		}
+		if log != nil {
+			log.Info("CustomResourceDefinition watch active; RESTMapper discovery cache will auto-invalidate on CRD changes")
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -88,7 +102,7 @@ func WatchCRDsAndInvalidate(ctx context.Context, rc *rest.Config, mapper meta.RE
 			case <-trigger:
 			}
 
-			timer := time.NewTimer(crdInvalidateDebounce)
+			timer := time.NewTimer(crdInvalidateWindow)
 		drain:
 			for {
 				select {
@@ -96,7 +110,7 @@ func WatchCRDsAndInvalidate(ctx context.Context, rc *rest.Config, mapper meta.RE
 					timer.Stop()
 					return
 				case <-trigger:
-					// keep draining the burst
+					// keep draining the burst within the window
 				case <-timer.C:
 					break drain
 				}
@@ -104,7 +118,7 @@ func WatchCRDsAndInvalidate(ctx context.Context, rc *rest.Config, mapper meta.RE
 
 			resetter.Reset()
 			if log != nil {
-				log.Debug("Invalidated discovery cache after CustomResourceDefinition change")
+				log.Debug("Invalidated RESTMapper discovery cache after CustomResourceDefinition change")
 			}
 		}
 	}()
