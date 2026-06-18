@@ -117,6 +117,20 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 		WithValues("name", mg.GetName()).
 		WithValues("namespace", mg.GetNamespace())
 
+	// If the Composition is being deleted, do NOT run the drift observation. Observe computes
+	// drift via a helm Upgrade, which fails with "has no deployed releases" once the release is
+	// mid-uninstall — and resync re-enqueues Observe every cycle, so the reconcile loops in
+	// ReconcileError and never finalizes. Report the resource as existing + up-to-date so the
+	// runtime routes the deletion to the Delete handler, which performs/completes the uninstall
+	// (it tolerates an already-removed release) and clears the finalizer.
+	if mg.GetDeletionTimestamp() != nil {
+		log.Debug("Composition has a deletionTimestamp; skipping drift observe — deletion is handled by Delete.")
+		return controller.ExternalObservation{
+			ResourceExists:   true,
+			ResourceUpToDate: true,
+		}, nil
+	}
+
 	dyn, err := dynamic.NewForConfig(h.kubeconfig)
 	if err != nil {
 		return controller.ExternalObservation{}, fmt.Errorf("creating dynamic client: %w", err)
