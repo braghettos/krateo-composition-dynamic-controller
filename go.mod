@@ -158,3 +158,7 @@ require (
 // statusprojection engine (PR braghettos/unstructured-runtime#3), unified in tag v1.1.2.
 // The fork keeps the upstream module path, so pin it via replace.
 replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.1.2
+
+// Source plumbing from the braghettos fork (v1.7.6): carries the jqutil int64/int32
+// gojq-panic fix the statusprojection engine relies on, plus crdgen array-default markers.
+replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.7.6
