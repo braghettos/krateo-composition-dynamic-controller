@@ -150,3 +150,8 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+// Use the braghettos fork of unstructured-runtime, which carries the
+// create-pending Observe-before-refuse recovery (PR braghettos/unstructured-runtime#2).
+// The fork keeps the upstream module path, so pin it via replace.
+replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.1.1
