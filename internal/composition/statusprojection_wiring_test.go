@@ -17,6 +17,8 @@ func TestSetStatus_ProjectsDeclaredFieldsAndObservedGeneration(t *testing.T) {
 			{ForPath: "chartVersion", Expression: `${ .helm.version }`},
 			{ForPath: "deployed", Expression: `${ .helm.status == "deployed" }`},
 			{ForPath: "region", Expression: "eu-west"}, // literal
+			{ForPath: "revision", Expression: `${ .helm.revision }`},
+			{ForPath: "releaseName", Expression: `${ .helm.name }`},
 		},
 	}
 	mg := &unstructured.Unstructured{Object: map[string]any{
@@ -27,12 +29,14 @@ func TestSetStatus_ProjectsDeclaredFieldsAndObservedGeneration(t *testing.T) {
 	}}
 
 	err := h.setStatus(context.Background(), mg, &statusManagerOpts{
-		chartURL:      "oci://reg/fireworksapp",
-		chartVersion:  "1.2.0",
-		releaseStatus: "deployed",
-		digest:        "abc",
-		message:       "ok",
-		conditionType: ConditionTypeAvailable,
+		chartURL:        "oci://reg/fireworksapp",
+		chartVersion:    "1.2.0",
+		releaseStatus:   "deployed",
+		releaseRevision: 7,
+		releaseName:     "demo-release",
+		digest:          "abc",
+		message:         "ok",
+		conditionType:   ConditionTypeAvailable,
 	})
 	if err != nil {
 		t.Fatalf("setStatus: %v", err)
@@ -58,6 +62,13 @@ func TestSetStatus_ProjectsDeclaredFieldsAndObservedGeneration(t *testing.T) {
 	if got := get("region"); got != "eu-west" {
 		t.Errorf("region = %v", got)
 	}
+	// helm.revision is an int -> projection engine writes int64.
+	if got := get("revision"); got != int64(7) {
+		t.Errorf("revision = %v (%T), want int64(7)", got, got)
+	}
+	if got := get("releaseName"); got != "demo-release" {
+		t.Errorf("releaseName = %v", got)
+	}
 	if got := get("observedGeneration"); got != int64(2) {
 		t.Errorf("observedGeneration = %v (%T), want int64(2)", got, got)
 	}
@@ -81,5 +92,38 @@ func TestSetStatus_NoTemplate(t *testing.T) {
 	v, _, _ := unstructured.NestedInt64(mg.Object, "status", "observedGeneration")
 	if v != 5 {
 		t.Errorf("observedGeneration = %d, want 5", v)
+	}
+}
+
+// On the gracefully-paused path, the declarative statusDataTemplate must NOT be
+// projected (we don't want to overwrite declarative status while paused), but
+// observedGeneration must still be stamped.
+func TestSetStatus_GracefullyPaused_DoesNotProject(t *testing.T) {
+	h := &handler{
+		statusDataTemplate: []statusprojection.Mapping{
+			{ForPath: "x", Expression: `${ "should-not-be-written" }`},
+		},
+	}
+	mg := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "composition.krateo.io/v1-0-0",
+		"kind":       "FireworksApp",
+		"metadata":   map[string]any{"name": "demo", "namespace": "apps", "generation": int64(3)},
+		"spec":       map[string]any{"host": "demo.example.com"},
+	}}
+
+	if err := h.setStatus(context.Background(), mg, &statusManagerOpts{
+		chartURL:      "u",
+		chartVersion:  "v",
+		conditionType: ConditionTypeReconcileGracefullyPaused,
+	}); err != nil {
+		t.Fatalf("setStatus: %v", err)
+	}
+
+	if _, found, _ := unstructured.NestedFieldNoCopy(mg.Object, "status", "x"); found {
+		t.Errorf("status.x was projected on the gracefully-paused path, want skipped")
+	}
+	v, found, _ := unstructured.NestedInt64(mg.Object, "status", "observedGeneration")
+	if !found || v != 3 {
+		t.Errorf("observedGeneration = %d (found=%v), want 3", v, found)
 	}
 }

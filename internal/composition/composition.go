@@ -350,15 +350,17 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	}
 
 	err = h.setStatus(ctx, mg, &statusManagerOpts{
-		force:          false,
-		resources:      nil, // we don't need to set resources here as they are already set when a resource is created/updated
-		previousDigest: previousDigest,
-		digest:         digest,
-		message:        "Composition is up-to-date",
-		chartURL:       pkg.URL,
-		chartVersion:   pkg.Version,
-		releaseStatus:  string(rel.Status),
-		conditionType:  ConditionTypeAvailable,
+		force:           false,
+		resources:       nil, // we don't need to set resources here as they are already set when a resource is created/updated
+		previousDigest:  previousDigest,
+		digest:          digest,
+		message:         "Composition is up-to-date",
+		chartURL:        pkg.URL,
+		chartVersion:    pkg.Version,
+		releaseStatus:   string(rel.Status),
+		releaseRevision: rel.Revision,
+		releaseName:     rel.Name,
+		conditionType:   ConditionTypeAvailable,
 	})
 	if err != nil {
 		return controller.ExternalObservation{}, err
@@ -512,15 +514,17 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 	}
 
 	err = h.setStatus(ctx, mg, &statusManagerOpts{
-		force:          true,
-		resources:      all,
-		previousDigest: "",
-		digest:         digest,
-		message:        "Composition created",
-		chartURL:       pkg.URL,
-		chartVersion:   pkg.Version,
-		releaseStatus:  string(rel.Status),
-		conditionType:  ConditionTypeAvailable,
+		force:           true,
+		resources:       all,
+		previousDigest:  "",
+		digest:          digest,
+		message:         "Composition created",
+		chartURL:        pkg.URL,
+		chartVersion:    pkg.Version,
+		releaseStatus:   string(rel.Status),
+		releaseRevision: rel.Revision,
+		releaseName:     rel.Name,
+		conditionType:   ConditionTypeAvailable,
 	})
 	if err != nil {
 		return fmt.Errorf("setting status: %w", err)
@@ -621,15 +625,17 @@ func (h *handler) Update(ctx context.Context, mg *unstructured.Unstructured) err
 	h.eventRecorder.Event(mg, event.Normal(reasonUpdated, "Update", fmt.Sprintf("Updated composition: %s", mg.GetName())))
 
 	statusOpts := &statusManagerOpts{
-		force:          false,
-		resources:      all,
-		digest:         digest,
-		previousDigest: previousDigest,
-		message:        "Composition values updated",
-		chartURL:       pkg.URL,
-		chartVersion:   pkg.Version,
-		releaseStatus:  string(upgradedRel.Status),
-		conditionType:  ConditionTypeAvailable,
+		force:           false,
+		resources:       all,
+		digest:          digest,
+		previousDigest:  previousDigest,
+		message:         "Composition values updated",
+		chartURL:        pkg.URL,
+		chartVersion:    pkg.Version,
+		releaseStatus:   string(upgradedRel.Status),
+		releaseRevision: upgradedRel.Revision,
+		releaseName:     upgradedRel.Name,
+		conditionType:   ConditionTypeAvailable,
 	}
 	err = h.setStatus(ctx, mg, statusOpts)
 	if err != nil {

@@ -69,15 +69,17 @@ const (
 )
 
 type statusManagerOpts struct {
-	force          bool
-	chartURL       string
-	chartVersion   string
-	releaseStatus  string
-	resources      []processor.MinimalMetadata
-	previousDigest string
-	digest         string
-	message        string
-	conditionType  ConditionType
+	force           bool
+	chartURL        string
+	chartVersion    string
+	releaseStatus   string
+	releaseRevision int
+	releaseName     string
+	resources       []processor.MinimalMetadata
+	previousDigest  string
+	digest          string
+	message         string
+	conditionType   ConditionType
 }
 
 func (h *handler) setStatus(ctx context.Context, mg *unstructured.Unstructured, opts *statusManagerOpts) error {
@@ -117,12 +119,14 @@ func (h *handler) setStatus(ctx context.Context, mg *unstructured.Unstructured, 
 	// Project the declarative status fields (statusDataTemplate) and observedGeneration.
 	// Built-in sources self/spec/status come from mg; helm is built here. Projection is
 	// degrade-only: a bad mapping affects just its field, never the baseline status.
-	if len(h.statusDataTemplate) > 0 {
+	if len(h.statusDataTemplate) > 0 && opts.conditionType != ConditionTypeReconcileGracefullyPaused {
 		resolved := map[string]any{
 			"helm": map[string]any{
-				"url":     opts.chartURL,
-				"version": opts.chartVersion,
-				"status":  opts.releaseStatus,
+				"url":      opts.chartURL,
+				"version":  opts.chartVersion,
+				"status":   opts.releaseStatus,
+				"revision": int64(opts.releaseRevision),
+				"name":     opts.releaseName,
 			},
 		}
 		if perr := statusprojection.Project(ctx, mg, resolved, h.statusDataTemplate); perr != nil {
