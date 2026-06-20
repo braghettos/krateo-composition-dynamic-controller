@@ -3,13 +3,13 @@ package composition
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	compositionCondition "github.com/krateoplatformops/composition-dynamic-controller/internal/condition"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/tools/dynamic"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/tools/processor"
 	"github.com/krateoplatformops/plumbing/maps"
 
+	xcontext "github.com/krateoplatformops/unstructured-runtime/pkg/context"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/statusprojection"
 	unstructuredtools "github.com/krateoplatformops/unstructured-runtime/pkg/tools/unstructured"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/unstructured/condition"
@@ -126,7 +126,7 @@ func (h *handler) setStatus(ctx context.Context, mg *unstructured.Unstructured, 
 			},
 		}
 		if perr := statusprojection.Project(ctx, mg, resolved, h.statusDataTemplate); perr != nil {
-			slog.WarnContext(ctx, "status projection: some fields could not be set", "error", perr)
+			xcontext.Logger(ctx).Info("status projection: some fields could not be set", "error", perr.Error())
 		}
 	}
 	if gerr := statusprojection.SetObservedGeneration(mg); gerr != nil {
