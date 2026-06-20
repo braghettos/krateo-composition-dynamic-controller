@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	ctrlevent "github.com/krateoplatformops/unstructured-runtime/pkg/controller/event"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/metrics/server"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/telemetry"
+	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/statusprojection"
 
 	"github.com/go-logr/logr"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/composition"
@@ -70,6 +73,9 @@ func main() {
 		env.String("COMPOSITION_CONTROLLER_SA_NAME", ""), "service account name")
 	saNamespace := flag.String("saNamespace",
 		env.String("COMPOSITION_CONTROLLER_SA_NAMESPACE", ""), "service account namespace")
+	statusDataTemplate := flag.String("status-data-template",
+		env.String("COMPOSITION_CONTROLLER_STATUS_DATA_TEMPLATE", ""),
+		"JSON-encoded statusDataTemplate ([{forPath,expression}]) shipped by core-provider from the CompositionDefinition")
 	maxErrorRetryInterval := flag.Duration("max-error-retry-interval",
 		env.Duration("COMPOSITION_CONTROLLER_MAX_ERROR_RETRY_INTERVAL", 60*time.Second), "The maximum interval between retries when an error occurs. This should be less than the half of the poll interval.")
 	minErrorRetryInterval := flag.Duration("min-error-retry-interval",
@@ -117,6 +123,16 @@ func main() {
 	sl := slog.New(lh).With(slog.String("service", serviceName))
 
 	log := logging.NewLogrLogger(logr.FromSlogHandler(sl.Handler()))
+
+	// Parse the declarative status projections shipped from the CompositionDefinition.
+	// An invalid value is non-fatal: status projection is simply disabled (baseline status
+	// is unaffected).
+	var statusMappings []statusprojection.Mapping
+	if s := strings.TrimSpace(*statusDataTemplate); s != "" {
+		if err := json.Unmarshal([]byte(s), &statusMappings); err != nil {
+			log.Info("ignoring invalid COMPOSITION_CONTROLLER_STATUS_DATA_TEMPLATE", "error", err.Error())
+		}
+	}
 
 	// Kubernetes configuration
 	var cfg *rest.Config
@@ -241,15 +257,16 @@ func main() {
 	}
 
 	handler := composition.NewHandler(&composition.HandlerOptions{
-		Kubeconfig:        cfg,
-		Pluralizer:        pluralizer,
-		PackageInfoGetter: pig,
-		EventRecorder:     *apiRecorder,
-		ChartInspectorUrl: *urlChartInspector,
-		SaName:            *saName,
-		SaNamespace:       *saNamespace,
-		SafeReleaseName:   *safeReleaseName,
-		Mapper:            mapper,
+		Kubeconfig:         cfg,
+		Pluralizer:         pluralizer,
+		PackageInfoGetter:  pig,
+		EventRecorder:      *apiRecorder,
+		ChartInspectorUrl:  *urlChartInspector,
+		SaName:             *saName,
+		SaNamespace:        *saNamespace,
+		SafeReleaseName:    *safeReleaseName,
+		Mapper:             mapper,
+		StatusDataTemplate: statusMappings,
 	})
 
 	opts := []builder.FuncOption{

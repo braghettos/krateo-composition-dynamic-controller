@@ -1,13 +1,16 @@
 package composition
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 
 	compositionCondition "github.com/krateoplatformops/composition-dynamic-controller/internal/condition"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/tools/dynamic"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/tools/processor"
 	"github.com/krateoplatformops/plumbing/maps"
 
+	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/statusprojection"
 	unstructuredtools "github.com/krateoplatformops/unstructured-runtime/pkg/tools/unstructured"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/unstructured/condition"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -69,6 +72,7 @@ type statusManagerOpts struct {
 	force          bool
 	chartURL       string
 	chartVersion   string
+	releaseStatus  string
 	resources      []processor.MinimalMetadata
 	previousDigest string
 	digest         string
@@ -76,7 +80,7 @@ type statusManagerOpts struct {
 	conditionType  ConditionType
 }
 
-func (h *handler) setStatus(mg *unstructured.Unstructured, opts *statusManagerOpts) error {
+func (h *handler) setStatus(ctx context.Context, mg *unstructured.Unstructured, opts *statusManagerOpts) error {
 	if opts == nil {
 		return fmt.Errorf("status manager options are nil")
 	}
@@ -108,6 +112,25 @@ func (h *handler) setStatus(mg *unstructured.Unstructured, opts *statusManagerOp
 	err = maps.SetNestedField(mg.Object, opts.chartVersion, "status", "helmChartVersion")
 	if err != nil {
 		return fmt.Errorf("setting chart version in status: %w", err)
+	}
+
+	// Project the declarative status fields (statusDataTemplate) and observedGeneration.
+	// Built-in sources self/spec/status come from mg; helm is built here. Projection is
+	// degrade-only: a bad mapping affects just its field, never the baseline status.
+	if len(h.statusDataTemplate) > 0 {
+		resolved := map[string]any{
+			"helm": map[string]any{
+				"url":     opts.chartURL,
+				"version": opts.chartVersion,
+				"status":  opts.releaseStatus,
+			},
+		}
+		if perr := statusprojection.Project(ctx, mg, resolved, h.statusDataTemplate); perr != nil {
+			slog.WarnContext(ctx, "status projection: some fields could not be set", "error", perr)
+		}
+	}
+	if gerr := statusprojection.SetObservedGeneration(mg); gerr != nil {
+		return fmt.Errorf("setting observedGeneration: %w", gerr)
 	}
 
 	switch opts.conditionType {

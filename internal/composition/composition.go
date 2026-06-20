@@ -36,6 +36,7 @@ import (
 
 	"github.com/krateoplatformops/unstructured-runtime/pkg/pluralizer"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools"
+	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/statusprojection"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -75,19 +76,23 @@ type HandlerOptions struct {
 	SaNamespace       string
 	SafeReleaseName   bool
 	Mapper            apimeta.RESTMapper
+	// StatusDataTemplate are the declarative status projections (snowplow
+	// widgetDataTemplate shape) shipped by core-provider from the CompositionDefinition.
+	StatusDataTemplate []statusprojection.Mapping
 }
 
 func NewHandler(opts *HandlerOptions) controller.ExternalClient {
 	return &handler{
-		kubeconfig:        opts.Kubeconfig,
-		pluralizer:        opts.Pluralizer,
-		packageInfoGetter: opts.PackageInfoGetter,
-		eventRecorder:     opts.EventRecorder,
-		chartInspectorUrl: opts.ChartInspectorUrl,
-		saName:            opts.SaName,
-		saNamespace:       opts.SaNamespace,
-		safeReleaseName:   opts.SafeReleaseName,
-		mapper:            opts.Mapper,
+		kubeconfig:         opts.Kubeconfig,
+		pluralizer:         opts.Pluralizer,
+		packageInfoGetter:  opts.PackageInfoGetter,
+		eventRecorder:      opts.EventRecorder,
+		chartInspectorUrl:  opts.ChartInspectorUrl,
+		saName:             opts.SaName,
+		saNamespace:        opts.SaNamespace,
+		safeReleaseName:    opts.SafeReleaseName,
+		mapper:             opts.Mapper,
+		statusDataTemplate: opts.StatusDataTemplate,
 	}
 }
 
@@ -104,6 +109,9 @@ type handler struct {
 	saNamespace       string
 	// Feature flag to disable random suffix in Helm release names. This is highly discouraged as it can lead to release name collisions, but it can be useful for certain complex charts that have issues with long release names.
 	safeReleaseName bool
+	// statusDataTemplate are the declarative ${ jq } status projections from the
+	// CompositionDefinition, evaluated each reconcile and written under .status.
+	statusDataTemplate []statusprojection.Mapping
 }
 
 func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (controller.ExternalObservation, error) {
@@ -341,7 +349,7 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 		}, nil
 	}
 
-	err = h.setStatus(mg, &statusManagerOpts{
+	err = h.setStatus(ctx, mg, &statusManagerOpts{
 		force:          false,
 		resources:      nil, // we don't need to set resources here as they are already set when a resource is created/updated
 		previousDigest: previousDigest,
@@ -349,6 +357,7 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 		message:        "Composition is up-to-date",
 		chartURL:       pkg.URL,
 		chartVersion:   pkg.Version,
+		releaseStatus:  string(rel.Status),
 		conditionType:  ConditionTypeAvailable,
 	})
 	if err != nil {
@@ -502,7 +511,7 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 		return fmt.Errorf("decoding release: %w", err)
 	}
 
-	err = h.setStatus(mg, &statusManagerOpts{
+	err = h.setStatus(ctx, mg, &statusManagerOpts{
 		force:          true,
 		resources:      all,
 		previousDigest: "",
@@ -510,6 +519,7 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 		message:        "Composition created",
 		chartURL:       pkg.URL,
 		chartVersion:   pkg.Version,
+		releaseStatus:  string(rel.Status),
 		conditionType:  ConditionTypeAvailable,
 	})
 	if err != nil {
@@ -618,9 +628,10 @@ func (h *handler) Update(ctx context.Context, mg *unstructured.Unstructured) err
 		message:        "Composition values updated",
 		chartURL:       pkg.URL,
 		chartVersion:   pkg.Version,
+		releaseStatus:  string(upgradedRel.Status),
 		conditionType:  ConditionTypeAvailable,
 	}
-	err = h.setStatus(mg, statusOpts)
+	err = h.setStatus(ctx, mg, statusOpts)
 	if err != nil {
 		return fmt.Errorf("setting status: %w", err)
 	}
