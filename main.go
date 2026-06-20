@@ -23,8 +23,10 @@ import (
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/statusprojection"
 
 	"github.com/go-logr/logr"
+	"github.com/krateoplatformops/composition-dynamic-controller/internal/authn"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/composition"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/metrics"
+	"github.com/krateoplatformops/composition-dynamic-controller/internal/snowplow"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/tools/archive"
 	"github.com/krateoplatformops/composition-dynamic-controller/internal/tools/dynamic"
 	"github.com/krateoplatformops/composition-dynamic-controller/pkg/meta"
@@ -76,6 +78,24 @@ func main() {
 	statusDataTemplate := flag.String("status-data-template",
 		env.String("COMPOSITION_CONTROLLER_STATUS_DATA_TEMPLATE", ""),
 		"JSON-encoded statusDataTemplate ([{forPath,expression}]) shipped by core-provider from the CompositionDefinition")
+	apiRefName := flag.String("api-ref-name",
+		env.String("COMPOSITION_CONTROLLER_API_REF_NAME", ""),
+		"name of the RESTAction resolved (via snowplow) for the .api status-projection source; empty disables apiRef resolution")
+	apiRefNamespace := flag.String("api-ref-namespace",
+		env.String("COMPOSITION_CONTROLLER_API_REF_NAMESPACE", ""),
+		"namespace of the apiRef RESTAction")
+	apiRefExtras := flag.String("api-ref-extras",
+		env.String("COMPOSITION_CONTROLLER_API_REF_EXTRAS", ""),
+		"JSON object of static extras merged into the apiRef resolution (snowplow spec.apiRef.extras)")
+	snowplowURL := flag.String("snowplow-url",
+		env.String("URL_SNOWPLOW", "http://snowplow.krateo-system.svc.cluster.local:8081"),
+		"snowplow base URL for resolving RESTActions (.api status source)")
+	authnURL := flag.String("authn-url",
+		env.String("URL_AUTHN", "http://authn.krateo-system.svc.cluster.local:8082"),
+		"authn base URL for exchanging the projected ServiceAccount token for a service JWT")
+	saTokenPath := flag.String("serviceaccount-token-path",
+		env.String("COMPOSITION_CONTROLLER_SERVICEACCOUNT_TOKEN_PATH", authn.DefaultTokenPath),
+		"path to the projected (authn-audience) ServiceAccount token used to authenticate to authn")
 	maxErrorRetryInterval := flag.Duration("max-error-retry-interval",
 		env.Duration("COMPOSITION_CONTROLLER_MAX_ERROR_RETRY_INTERVAL", 60*time.Second), "The maximum interval between retries when an error occurs. This should be less than the half of the poll interval.")
 	minErrorRetryInterval := flag.Duration("min-error-retry-interval",
@@ -132,6 +152,28 @@ func main() {
 		if err := json.Unmarshal([]byte(s), &statusMappings); err != nil {
 			log.Info("ignoring invalid COMPOSITION_CONTROLLER_STATUS_DATA_TEMPLATE", "error", err.Error())
 		}
+	}
+
+	// Build the apiRef resolver when an apiRef is declared: the CDC exchanges its projected
+	// ServiceAccount token for an authn JWT (authn.Client.Token) and uses it as the Bearer for
+	// snowplow's /call endpoint, resolving the RESTAction's status into the ".api" projection
+	// source. Absent apiRef → nil resolver (the ".api" source is simply unavailable).
+	var apiResolver composition.APIResolver
+	if name := strings.TrimSpace(*apiRefName); name != "" {
+		var extras map[string]any
+		if s := strings.TrimSpace(*apiRefExtras); s != "" {
+			if err := json.Unmarshal([]byte(s), &extras); err != nil {
+				log.Info("ignoring invalid COMPOSITION_CONTROLLER_API_REF_EXTRAS", "error", err.Error())
+			}
+		}
+		authnClient := authn.New(*authnURL, *saTokenPath)
+		snowplowClient := snowplow.New(*snowplowURL, authnClient.Token)
+		apiResolver = composition.NewSnowplowAPIResolver(
+			snowplowClient,
+			snowplow.ApiRef{Name: name, Namespace: *apiRefNamespace},
+			extras,
+		)
+		log.Info("apiRef status source enabled", "name", name, "namespace", *apiRefNamespace, "snowplow", *snowplowURL)
 	}
 
 	// Kubernetes configuration
@@ -267,6 +309,7 @@ func main() {
 		SafeReleaseName:    *safeReleaseName,
 		Mapper:             mapper,
 		StatusDataTemplate: statusMappings,
+		APIResolver:        apiResolver,
 	})
 
 	opts := []builder.FuncOption{

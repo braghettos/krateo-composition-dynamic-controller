@@ -79,6 +79,16 @@ type HandlerOptions struct {
 	// StatusDataTemplate are the declarative status projections (snowplow
 	// widgetDataTemplate shape) shipped by core-provider from the CompositionDefinition.
 	StatusDataTemplate []statusprojection.Mapping
+	// APIResolver, when set, resolves the CompositionDefinition's apiRef each reconcile to the
+	// keyed ".api" projection source. nil disables apiRef resolution (the ".api" source is
+	// simply absent and api-dependent mappings degrade individually).
+	APIResolver APIResolver
+}
+
+// APIResolver resolves the apiRef's RESTAction (via snowplow, under the CDC's authn identity)
+// to the keyed `.api.<callName>` source map for a specific composition instance.
+type APIResolver interface {
+	Resolve(ctx context.Context, mg *unstructured.Unstructured) (map[string]any, error)
 }
 
 func NewHandler(opts *HandlerOptions) controller.ExternalClient {
@@ -93,6 +103,7 @@ func NewHandler(opts *HandlerOptions) controller.ExternalClient {
 		safeReleaseName:    opts.SafeReleaseName,
 		mapper:             opts.Mapper,
 		statusDataTemplate: opts.StatusDataTemplate,
+		apiResolver:        opts.APIResolver,
 	}
 }
 
@@ -112,6 +123,9 @@ type handler struct {
 	// statusDataTemplate are the declarative ${ jq } status projections from the
 	// CompositionDefinition, evaluated each reconcile and written under .status.
 	statusDataTemplate []statusprojection.Mapping
+	// apiResolver resolves the apiRef to the ".api" projection source each reconcile; nil
+	// when no apiRef is declared.
+	apiResolver APIResolver
 }
 
 func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (controller.ExternalObservation, error) {

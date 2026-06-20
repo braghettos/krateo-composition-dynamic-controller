@@ -129,6 +129,16 @@ func (h *handler) setStatus(ctx context.Context, mg *unstructured.Unstructured, 
 				"name":     opts.releaseName,
 			},
 		}
+		// Resolve the apiRef (RESTAction via snowplow) into the ".api" source. Degrade-only:
+		// a resolution failure leaves ".api" absent so api-dependent mappings skip, while
+		// built-in and helm-sourced fields still project.
+		if h.apiResolver != nil {
+			if api, aerr := h.apiResolver.Resolve(ctx, mg); aerr != nil {
+				xcontext.Logger(ctx).Info("status projection: apiRef resolution failed; .api source unavailable", "error", aerr.Error())
+			} else if api != nil {
+				resolved["api"] = api
+			}
+		}
 		if perr := statusprojection.Project(ctx, mg, resolved, h.statusDataTemplate); perr != nil {
 			xcontext.Logger(ctx).Info("status projection: some fields could not be set", "error", perr.Error())
 		}
