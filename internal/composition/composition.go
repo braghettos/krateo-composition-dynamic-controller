@@ -32,6 +32,7 @@ import (
 	"github.com/krateoplatformops/plumbing/maps"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/controller"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/meta"
+	"github.com/krateoplatformops/unstructured-runtime/pkg/telemetry"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 
 	"github.com/krateoplatformops/unstructured-runtime/pkg/pluralizer"
@@ -303,6 +304,12 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	if err != nil {
 		return controller.ExternalObservation{}, fmt.Errorf("creating label post renderer: %w", err)
 	}
+	// Stamp the active reconcile trace onto every child manifest (krateo.io/traceparent) so the
+	// child composition's controller continues the same distributed trace. No-op when tracing is
+	// off; excluded from the release digest (processor.ComputeReleaseDigest) so it never churns.
+	tpCarrier := map[string]string{}
+	telemetry.InjectTraceparent(ctx, tpCarrier)
+	postrenderLabels.WithTraceparent(tpCarrier[meta.AnnotationKeyTraceparent], tpCarrier[meta.AnnotationKeyTracestate])
 	helmMetrics = metrics.NewHelmMetrics(ctx)
 	upgradedRel, err := helmMetrics.TimedUpgradeWithResult(func() (*helmconfig.Release, error) {
 		return hc.Upgrade(ctx, releaseName, pkg.URL, &helmconfig.UpgradeConfig{
@@ -484,6 +491,10 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 	if err != nil {
 		return fmt.Errorf("creating label post renderer: %w", err)
 	}
+	// Cross-composition trace propagation (see Observe); excluded from the release digest.
+	tpCarrier := map[string]string{}
+	telemetry.InjectTraceparent(ctx, tpCarrier)
+	postrenderLabels.WithTraceparent(tpCarrier[meta.AnnotationKeyTraceparent], tpCarrier[meta.AnnotationKeyTracestate])
 
 	actionConfig := &helmconfig.ActionConfig{
 		ChartVersion:          pkg.Version,

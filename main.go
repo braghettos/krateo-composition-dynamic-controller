@@ -107,9 +107,11 @@ func main() {
 	safeReleaseName := flag.Bool("safe-release-name",
 		env.Bool("COMPOSITION_CONTROLLER_SAFE_RELEASE_NAME", true), "If disabled the randmom suffix is not appended in the Helm release name. This can be useful for avoid having problems with complex helm charts. The use of this option is highly discouraged, as it can lead to release name collisions.")
 	otelEnabled := flag.Bool("otel-enabled", env.Bool("OTEL_ENABLED", false), "Enable OTLP metrics export for provider-runtime telemetry.")
-	otelServiceName := flag.String("otel-service-name", serviceName, "The service name attached to exported OTLP metrics.")
+	otelTracingEnabled := flag.Bool("otel-tracing-enabled", env.Bool("OTEL_TRACING_ENABLED", false), "Enable OTLP trace export (distributed reconcile traces).")
+	otelServiceName := flag.String("otel-service-name", serviceName, "The service name attached to exported OTLP metrics/traces.")
 	otelExportInterval := flag.Duration("otel-export-interval", env.Duration("OTEL_EXPORT_INTERVAL", defaultOtelExportInterval), "The interval used to export OTLP metrics.")
 	deploymentName := flag.String("deployment-name", env.String("DEPLOYMENT_NAME", ""), "The deployment name for stable resource identification in metrics.")
+	serviceVersion := env.String("SERVICE_VERSION", "") // cdc image version, stamped as service.version on metrics/traces
 
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Flags:")
@@ -235,17 +237,40 @@ func main() {
 	telemetryEnabled := *otelEnabled
 	telemetryExportInterval := *otelExportInterval
 
-	telemetryMetrics, telemetryShutdown, err := telemetry.Setup(context.Background(), log, telemetry.Config{
+	// Tag this controller's telemetry resource with the composition TYPE it manages
+	// (krateo.io/composition-gvr); the per-instance composition-id rides on the reconcile span
+	// + plumbing's child labels. Appended to OTEL_RESOURCE_ATTRIBUTES so resource.Default()
+	// picks it up — shared by both the metrics and trace resources.
+	gvrAttr := fmt.Sprintf("krateo.io/composition-gvr=%s/%s/%s", *resourceGroup, *resourceVersion, *resourceName)
+	if existing := os.Getenv("OTEL_RESOURCE_ATTRIBUTES"); existing != "" {
+		gvrAttr = existing + "," + gvrAttr
+	}
+	os.Setenv("OTEL_RESOURCE_ATTRIBUTES", gvrAttr)
+
+	telemetryConfig := telemetry.Config{
 		Enabled:        telemetryEnabled,
+		TracingEnabled: *otelTracingEnabled,
 		ServiceName:    *otelServiceName,
 		ExportInterval: telemetryExportInterval,
 		DeploymentName: *deploymentName,
-	})
+		Version:        serviceVersion,
+	}
+
+	telemetryMetrics, telemetryShutdown, err := telemetry.Setup(context.Background(), log, telemetryConfig)
 	if err != nil {
 		log.Error(err, "Cannot initialize OpenTelemetry metrics")
 		os.Exit(1)
 	}
 	defer telemetryShutdown(context.Background())
+
+	// Distributed reconcile traces (gated OTEL_TRACING_ENABLED). Installs the W3C propagator
+	// even when disabled so an inbound traceparent is honored; returns a no-op shutdown.
+	tracingShutdown, err := telemetry.SetupTracing(context.Background(), log, telemetryConfig)
+	if err != nil {
+		log.Error(err, "Cannot initialize OpenTelemetry tracing")
+		os.Exit(1)
+	}
+	defer tracingShutdown(context.Background())
 
 	// Initialize CDC-specific metrics
 	if err := metrics.InitMetrics(context.Background(), log, telemetryEnabled, *otelServiceName, telemetryExportInterval, *deploymentName); err != nil {

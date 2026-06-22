@@ -82,10 +82,35 @@ func ComputeReleaseDigest(rel *helm.Release) (string, error) {
 	}
 
 	h := hasher.NewFNVObjectHash()
-	err := h.SumHashStrings(rel.Manifest)
+	// Exclude the per-reconcile krateo.io/traceparent (+ tracestate) annotations from the
+	// change-detection digest: their value differs on every reconcile (each is a new trace),
+	// so hashing them would make the composition perpetually "out-of-date" and trigger a helm
+	// Upgrade on every reconcile (churn). They are still stamped on the live resources for
+	// trace propagation — just not counted as a content change.
+	err := h.SumHashStrings(stripTraceContext(rel.Manifest))
 	if err != nil {
 		return "", err
 	}
 
 	return h.GetHash(), nil
+}
+
+// stripTraceContext removes the krateo.io/traceparent and krateo.io/tracestate annotation
+// lines from a rendered manifest so they do not affect the release digest. Only those lines
+// are removed and everything else stays byte-identical; a manifest that never carried them
+// (fast path) hashes exactly as before the feature existed.
+func stripTraceContext(manifest string) string {
+	if !strings.Contains(manifest, "krateo.io/traceparent") && !strings.Contains(manifest, "krateo.io/tracestate") {
+		return manifest
+	}
+	lines := strings.Split(manifest, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "krateo.io/traceparent:") || strings.HasPrefix(t, "krateo.io/tracestate:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
