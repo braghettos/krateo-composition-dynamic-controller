@@ -127,20 +127,15 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 
-	// JSON logs on stderr, compatible with logs-ingester: each line is a single JSON
-	// object with a canonical "timestamp" field in RFC3339Nano UTC. See
-	// docs/logs-ingester-compatibility.md.
-	lh := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     logLevel,
-		AddSource: false,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				return slog.String("timestamp", a.Value.Time().UTC().Format(time.RFC3339Nano))
-			}
-			return a
-		},
-	})
-	sl := slog.New(lh).With(slog.String("service", serviceName))
+	// JSON logs on stderr in the OTel log model (RFC3339Nano "timestamp", SeverityText +
+	// SeverityNumber, trace_id/span_id when a span is in context), compatible with logs-ingester.
+	// The shared handler lives in unstructured-runtime (pkg/logging) so every composition
+	// controller is consistent; "service" is kept alongside the OTel "service.name" during the
+	// transition. See docs/logs-ingester-compatibility.md.
+	sl := slog.New(logging.NewOTelJSONHandler(logLevel, os.Stderr,
+		slog.String("service.name", serviceName),
+		slog.String("service", serviceName),
+	))
 
 	log := logging.NewLogrLogger(logr.FromSlogHandler(sl.Handler()))
 
@@ -254,7 +249,7 @@ func main() {
 
 	// Initialize CDC-specific metrics
 	if err := metrics.InitMetrics(context.Background(), log, telemetryEnabled, *otelServiceName, telemetryExportInterval, *deploymentName); err != nil {
-		slog.Warn("Cannot initialize CDC metrics, continuing without metrics", "error", err)
+		log.Warn("Cannot initialize CDC metrics, continuing without metrics", "error", err)
 	}
 	metrics.DebugStatus()
 
