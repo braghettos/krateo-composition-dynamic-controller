@@ -153,11 +153,11 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-// Use the braghettos fork of unstructured-runtime, which carries the create-pending
-// Observe-before-refuse recovery (PR braghettos/unstructured-runtime#2) AND the jq-based
-// statusprojection engine (PR braghettos/unstructured-runtime#3), unified in tag v1.1.2.
+// Use the braghettos fork of unstructured-runtime: create-pending Observe-before-refuse
+// recovery (#2), jq-based statusprojection (#3), AND the shared OTel JSON log handler
+// NewOTelJSONHandler (#4) -- unified in tag v1.2.0.
 // The fork keeps the upstream module path, so pin it via replace.
-replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.1.2
+replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.2.0
 
 // Source plumbing from the braghettos fork (v1.7.6): carries the jqutil int64/int32
 // gojq-panic fix the statusprojection engine relies on, plus crdgen array-default markers.
