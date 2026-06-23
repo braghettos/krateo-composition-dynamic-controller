@@ -13,6 +13,12 @@ import (
 
 const (
 	// Labels for Krateo Composition
+	//
+	// CROSS-REPO CONTRACT: CompositionDefinitionNameLabel, CompositionDefinitionNamespaceLabel and
+	// CompositionVersionLabel are declared INDEPENDENTLY here and in core-provider's
+	// internal/tools/deploy/deploy.go (core-provider does not import this module). The three
+	// strings MUST stay byte-identical: if they drift, owner-scoped version migration silently
+	// selects nothing and leaves composition instances orphaned. Edit one → edit both.
 	CompositionDefinitionNameLabel      = "krateo.io/composition-definition-name"
 	CompositionDefinitionNamespaceLabel = "krateo.io/composition-definition-namespace"
 	CompositionDefinitionGroupLabel     = "krateo.io/composition-definition-group"
