@@ -1,6 +1,7 @@
 package rbacgen
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -14,8 +15,8 @@ type MockChartInspector struct {
 	mock.Mock
 }
 
-func (m *MockChartInspector) Resources(params chartinspector.Parameters) ([]chartinspector.Resource, error) {
-	args := m.Called(params)
+func (m *MockChartInspector) Resources(ctx context.Context, params chartinspector.Parameters) ([]chartinspector.Resource, error) {
+	args := m.Called(ctx, params)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -80,9 +81,9 @@ func TestRBACGen_Generate(t *testing.T) {
 			CompositionDefinitionResource:  params.CompositionDefintionGVR.Resource,
 		}
 
-		mockInspector.On("Resources", expectedParams).Return(mockResources, nil)
+		mockInspector.On("Resources", mock.Anything, expectedParams).Return(mockResources, nil)
 
-		policy, err := rbacGen.Generate(params)
+		policy, err := rbacGen.Generate(context.Background(), params)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, policy)
@@ -124,9 +125,9 @@ func TestRBACGen_Generate(t *testing.T) {
 			CompositionResource:  params.CompositionGVR.Resource,
 		}
 
-		mockInspector.On("Resources", expectedParams).Return(mockResources, nil)
+		mockInspector.On("Resources", mock.Anything, expectedParams).Return(mockResources, nil)
 
-		policy, err := rbacGen.Generate(params)
+		policy, err := rbacGen.Generate(context.Background(), params)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, policy)
@@ -157,9 +158,9 @@ func TestRBACGen_Generate(t *testing.T) {
 			CompositionNamespace: params.CompositionNamespace,
 		}
 
-		mockInspector.On("Resources", expectedParams).Return(mockResources, nil)
+		mockInspector.On("Resources", mock.Anything, expectedParams).Return(mockResources, nil)
 
-		policy, err := rbacGen.Generate(params)
+		policy, err := rbacGen.Generate(context.Background(), params)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, policy)
@@ -188,9 +189,9 @@ func TestRBACGen_Generate(t *testing.T) {
 			CompositionNamespace: params.CompositionNamespace,
 		}
 
-		mockInspector.On("Resources", expectedParams).Return(mockResources, nil)
+		mockInspector.On("Resources", mock.Anything, expectedParams).Return(mockResources, nil)
 
-		policy, err := rbacGen.Generate(params)
+		policy, err := rbacGen.Generate(context.Background(), params)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, policy)
@@ -215,9 +216,9 @@ func TestRBACGen_Generate(t *testing.T) {
 			CompositionNamespace: params.CompositionNamespace,
 		}
 
-		mockInspector.On("Resources", expectedParams).Return(nil, errors.New("some error"))
+		mockInspector.On("Resources", mock.Anything, expectedParams).Return(nil, errors.New("some error"))
 
-		policy, err := rbacGen.Generate(params)
+		policy, err := rbacGen.Generate(context.Background(), params)
 
 		assert.Error(t, err)
 		assert.Nil(t, policy)
@@ -244,9 +245,9 @@ func TestRBACGen_Generate(t *testing.T) {
 			CompositionNamespace: params.CompositionNamespace,
 		}
 
-		mockInspector.On("Resources", expectedParams).Return(mockResources, nil)
+		mockInspector.On("Resources", mock.Anything, expectedParams).Return(mockResources, nil)
 
-		policy, err := rbacGen.Generate(params)
+		policy, err := rbacGen.Generate(context.Background(), params)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, policy)

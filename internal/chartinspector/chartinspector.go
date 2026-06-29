@@ -1,12 +1,15 @@
 package chartinspector
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Resource struct {
@@ -31,7 +34,7 @@ type Parameters struct {
 }
 
 type ChartInspectorInterface interface {
-	Resources(Parameters) ([]Resource, error)
+	Resources(ctx context.Context, params Parameters) ([]Resource, error)
 }
 
 type ChartInspector struct {
@@ -42,8 +45,16 @@ type ChartInspector struct {
 var _ ChartInspectorInterface = &ChartInspector{}
 
 func NewChartInspector(server string) ChartInspector {
-	httpcli := http.DefaultClient
-	httpcli.Timeout = 60 * time.Second
+	// Wrap the default transport with otelhttp so the outbound request to
+	// chart-inspector injects the W3C traceparent header (continuing the active
+	// reconcile span) and emits a client span. When no global tracer provider /
+	// propagator is registered this transport is a cheap pass-through, so the
+	// off-path stays byte-identical; the unstructured-runtime installs the W3C
+	// propagator unconditionally, so the active reconcile span always propagates.
+	httpcli := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
 
 	return ChartInspector{server: server, httpClient: httpcli}
 }
@@ -78,7 +89,7 @@ func (c *ChartInspector) Validate(params Parameters) error {
 	return nil
 }
 
-func (c *ChartInspector) Resources(params Parameters) ([]Resource, error) {
+func (c *ChartInspector) Resources(ctx context.Context, params Parameters) ([]Resource, error) {
 	if err := c.Validate(params); err != nil {
 		return nil, fmt.Errorf("validating parameters: %w", err)
 	}
@@ -86,7 +97,9 @@ func (c *ChartInspector) Resources(params Parameters) ([]Resource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("joining server url: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+	// Use the reconcile ctx so the otelhttp transport injects the traceparent
+	// header from the active span, linking the chart-inspector server span.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}

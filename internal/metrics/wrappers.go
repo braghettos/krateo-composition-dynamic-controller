@@ -22,11 +22,10 @@ type metricChartInspector struct {
 	wrapped chartinspector.ChartInspectorInterface
 }
 
-func (m *metricChartInspector) Resources(params chartinspector.Parameters) ([]chartinspector.Resource, error) {
-	ctx := context.Background() // Use background context for metrics
+func (m *metricChartInspector) Resources(ctx context.Context, params chartinspector.Parameters) ([]chartinspector.Resource, error) {
 	timer := NewTimer()
 
-	resources, err := m.wrapped.Resources(params)
+	resources, err := m.wrapped.Resources(ctx, params)
 
 	metrics := GetInstance()
 	if metrics != nil {
@@ -54,11 +53,10 @@ func (m *metricRBACGen) WithBaseName(name string) rbacgen.RBACGenInterface {
 	return m
 }
 
-func (m *metricRBACGen) Generate(params rbacgen.Parameters) (*rbac.RBAC, error) {
-	ctx := context.Background() // Use background context for metrics
+func (m *metricRBACGen) Generate(ctx context.Context, params rbacgen.Parameters) (*rbac.RBAC, error) {
 	timer := NewTimer()
 
-	result, err := m.wrapped.Generate(params)
+	result, err := m.wrapped.Generate(ctx, params)
 
 	metrics := GetInstance()
 	if metrics != nil {

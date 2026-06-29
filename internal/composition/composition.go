@@ -243,7 +243,7 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	// Get Resources and generate RBAC
 	generated, err := rbgen.
 		WithBaseName(releaseName).
-		Generate(rbacgen.Parameters{
+		Generate(ctx, rbacgen.Parameters{
 			CompositionName:                mg.GetName(),
 			CompositionNamespace:           mg.GetNamespace(),
 			CompositionGVR:                 compositionGVR,
@@ -451,7 +451,7 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 	// Get Resources and generate RBAC
 	generated, err := rbgen.
 		WithBaseName(releaseName).
-		Generate(rbacgen.Parameters{
+		Generate(ctx, rbacgen.Parameters{
 			CompositionName:                mg.GetName(),
 			CompositionNamespace:           mg.GetNamespace(),
 			CompositionGVR:                 compositionGVR,
@@ -780,7 +780,7 @@ func (h *handler) Delete(ctx context.Context, mg *unstructured.Unstructured) err
 	// Get Resources and generate RBAC
 	generated, err := rbgen.
 		WithBaseName(compositionMeta.GetReleaseName(mg)).
-		Generate(rbacgen.Parameters{
+		Generate(ctx, rbacgen.Parameters{
 			CompositionName:                mg.GetName(),
 			CompositionNamespace:           mg.GetNamespace(),
 			CompositionGVR:                 compositionGVR,
