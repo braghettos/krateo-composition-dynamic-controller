@@ -1,6 +1,7 @@
 package rbacgen
 
 import (
+	"context"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,7 +15,7 @@ import (
 )
 
 type RBACGenInterface interface {
-	Generate(Parameters) (*rbac.RBAC, error)
+	Generate(ctx context.Context, params Parameters) (*rbac.RBAC, error)
 	WithBaseName(string) RBACGenInterface
 }
 
@@ -49,8 +50,8 @@ func (r *RBACGen) WithBaseName(baseName string) RBACGenInterface {
 	return r
 }
 
-func (r *RBACGen) Generate(params Parameters) (*rbac.RBAC, error) {
-	resources, err := r.chartInspector.Resources(chartinspector.Parameters{
+func (r *RBACGen) Generate(ctx context.Context, params Parameters) (*rbac.RBAC, error) {
+	resources, err := r.chartInspector.Resources(ctx, chartinspector.Parameters{
 		CompositionName:                params.CompositionName,
 		CompositionNamespace:           params.CompositionNamespace,
 		CompositionGroup:               params.CompositionGVR.Group,

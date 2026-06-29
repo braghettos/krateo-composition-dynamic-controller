@@ -1,10 +1,13 @@
 package chartinspector
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func TestNewChartInspector(t *testing.T) {
@@ -14,8 +17,13 @@ func TestNewChartInspector(t *testing.T) {
 	if inspector.server != server {
 		t.Errorf("expected server %s, got %s", server, inspector.server)
 	}
-	if inspector.httpClient != http.DefaultClient {
-		t.Error("expected default http client")
+	if inspector.httpClient == nil {
+		t.Error("expected non-nil http client")
+	}
+	// The client must carry an otelhttp transport so the outbound request to
+	// chart-inspector injects the W3C traceparent header from the active span.
+	if _, ok := inspector.httpClient.Transport.(*otelhttp.Transport); !ok {
+		t.Errorf("expected otelhttp transport, got %T", inspector.httpClient.Transport)
 	}
 }
 
@@ -206,7 +214,7 @@ func TestChartInspector_Resources(t *testing.T) {
 			defer server.Close()
 
 			inspector := NewChartInspector(server.URL)
-			resources, err := inspector.Resources(tt.params)
+			resources, err := inspector.Resources(context.Background(), tt.params)
 
 			if tt.wantErr {
 				if err == nil {
@@ -297,7 +305,7 @@ func TestChartInspector_ResourcesQueryParameters(t *testing.T) {
 		CompositionGroup:               "custom.group",
 	}
 
-	_, err := inspector.Resources(params)
+	_, err := inspector.Resources(context.Background(), params)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
