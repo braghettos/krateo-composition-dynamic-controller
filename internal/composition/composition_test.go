@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -521,6 +522,273 @@ func TestController(t *testing.T) {
 
 			// Fail immediately to prevent cleaning up evidence if debugging
 			t.FailNow()
+		}
+
+		return ctx
+	}).Assess("SelfHeal: Recreate Deleted Child", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// (b) SELF-HEAL DELETE: delete a finops.krateo.io/datapresentationazures child
+		// out-of-band. The next reconcile (Observe -> Update) must recreate it, and the
+		// helm revision must bump exactly once (then remain stable).
+		dy := dynamic.NewForConfigOrDie(c)
+		var obj unstructured.Unstructured
+		if err := decoder.DecodeFile(os.DirFS(filepath.Join(testdataPath, "compositions")), "focus.yaml", &obj); err != nil {
+			t.Error("Decoding composition manifests.", "error", err)
+			return ctx
+		}
+
+		version := obj.GetLabels()["krateo.io/composition-version"]
+		gvr := schema.GroupVersionResource{
+			Group:    "composition.krateo.io",
+			Version:  version,
+			Resource: flect.Pluralize(strings.ToLower(obj.GetObjectKind().GroupVersionKind().Kind)),
+		}
+		cli := dy.Resource(gvr).Namespace(obj.GetNamespace())
+
+		u, err := cli.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		if err != nil {
+			t.Error("Getting composition.", "error", err)
+			return ctx
+		}
+		releaseName := compositionMeta.GetReleaseName(u)
+
+		// Use the admin config (cfg) for out-of-band cluster inspection/mutation; the
+		// SA-scoped config `c` cannot read finops children or list helm secrets.
+		adminCfg := cfg.Client().RESTConfig()
+		clientset, _ := kubernetes.NewForConfig(adminCfg)
+		// latestRevision returns the HIGHEST helm release revision (from the "version"
+		// label of the owner=helm secrets). We track the max revision NUMBER rather than
+		// the secret COUNT because MaxHistory caps the number of retained secrets, which
+		// makes a raw count useless once at the cap.
+		latestRevision := func() int {
+			list, err := clientset.CoreV1().Secrets(u.GetNamespace()).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("name=%s,owner=helm", releaseName),
+			})
+			if err != nil {
+				t.Fatalf("listing helm revisions: %v", err)
+			}
+			max := 0
+			for _, s := range list.Items {
+				if v := s.Labels["version"]; v != "" {
+					if n, err := strconv.Atoi(v); err == nil && n > max {
+						max = n
+					}
+				}
+			}
+			return max
+		}
+
+		childGVR := schema.GroupVersionResource{
+			Resource: "datapresentationazures",
+			Group:    "finops.krateo.io",
+			Version:  "v1alpha1",
+		}
+		childName := "focus-1-focus-data-presentation-azure"
+		childCli := dynamic.NewForConfigOrDie(adminCfg).Resource(childGVR).Namespace(obj.GetNamespace())
+
+		// Confirm the child exists before we delete it.
+		if _, err := childCli.Get(ctx, childName, metav1.GetOptions{}); err != nil {
+			t.Fatalf("expected child %q to exist before delete: %v", childName, err)
+		}
+
+		revBefore := latestRevision()
+		t.Logf("[selfheal-delete] latest revision before out-of-band delete: %d", revBefore)
+
+		// Delete the child out-of-band.
+		if err := childCli.Delete(ctx, childName, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("deleting child out-of-band: %v", err)
+		}
+		// Wait for the delete to settle.
+		for i := 0; i < 20; i++ {
+			if _, err := childCli.Get(ctx, childName, metav1.GetOptions{}); errors.IsNotFound(err) {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if _, err := childCli.Get(ctx, childName, metav1.GetOptions{}); !errors.IsNotFound(err) {
+			t.Fatalf("child %q was not deleted out-of-band (err=%v)", childName, err)
+		}
+		t.Logf("[selfheal-delete] child %q deleted out-of-band", childName)
+
+		// A single Observe runs the self-healing Reconcile internally: kc.Update recreates
+		// the deleted child, Reconcile detects the create as a real change and writes ONE
+		// new revision. We assert exactly-once by driving the heal through Observe alone
+		// (not the Observe->Update route, which would apply a second time).
+		u, _ = cli.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		observation, err := handler.Observe(ctx, u)
+		if err != nil {
+			t.Fatalf("observe after out-of-band delete: %v", err)
+		}
+		if observation.ResourceUpToDate {
+			t.Errorf("expected Observe to report drift (ResourceUpToDate=false) after child deletion, got up-to-date")
+		}
+
+		// Child must be back (recreated by the reconcile's 3-way merge).
+		if _, err := childCli.Get(ctx, childName, metav1.GetOptions{}); err != nil {
+			t.Errorf("child %q was NOT recreated by reconcile: %v", childName, err)
+		} else {
+			t.Logf("[selfheal-delete] child %q recreated by reconcile", childName)
+		}
+
+		revAfterHeal := latestRevision()
+		t.Logf("[selfheal-delete] latest revision after heal: %d (was %d)", revAfterHeal, revBefore)
+		if revAfterHeal != revBefore+1 {
+			t.Errorf("expected revision to bump exactly once (%d -> %d), got %d", revBefore, revBefore+1, revAfterHeal)
+		}
+
+		// Subsequent steady-state reconciles (via Observe) must NOT bump the revision again.
+		for i := 0; i < 3; i++ {
+			u, _ = cli.Get(ctx, obj.GetName(), metav1.GetOptions{})
+			obs, err := handler.Observe(ctx, u)
+			if err != nil {
+				t.Fatalf("steady-state observe #%d: %v", i, err)
+			}
+			if !obs.ResourceUpToDate {
+				t.Errorf("steady-state reconcile #%d unexpectedly reported drift", i)
+			}
+		}
+		revSteady := latestRevision()
+		t.Logf("[selfheal-delete] latest revision after 3 steady reconciles: %d (was %d)", revSteady, revAfterHeal)
+		if revSteady != revAfterHeal {
+			t.Errorf("steady-state reconciles bumped revision: %d -> %d", revAfterHeal, revSteady)
+		}
+
+		return ctx
+	}).Assess("SelfHeal: Patch Field Drift", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// (c) SELF-HEAL FIELD DRIFT: mutate a CHILD resource's spec field out-of-band
+		// (kubectl-edit equivalent), then run one reconcile via Observe and assert the
+		// 3-way merge PATCHED the field BACK to the chart-declared value, that the helm
+		// revision bumped exactly once, and that subsequent steady-state reconciles do
+		// NOT bump it again. This is the case the existence-only hybrid could not do.
+		dy := dynamic.NewForConfigOrDie(c)
+		var obj unstructured.Unstructured
+		if err := decoder.DecodeFile(os.DirFS(filepath.Join(testdataPath, "compositions")), "focus.yaml", &obj); err != nil {
+			t.Error("Decoding composition manifests.", "error", err)
+			return ctx
+		}
+		version := obj.GetLabels()["krateo.io/composition-version"]
+		gvr := schema.GroupVersionResource{
+			Group:    "composition.krateo.io",
+			Version:  version,
+			Resource: flect.Pluralize(strings.ToLower(obj.GetObjectKind().GroupVersionKind().Kind)),
+		}
+		cli := dy.Resource(gvr).Namespace(obj.GetNamespace())
+		u, err := cli.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("getting composition: %v", err)
+		}
+		releaseName := compositionMeta.GetReleaseName(u)
+		adminCfg := cfg.Client().RESTConfig()
+		clientset, _ := kubernetes.NewForConfig(adminCfg)
+		latestRevision := func() int {
+			list, err := clientset.CoreV1().Secrets(u.GetNamespace()).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("name=%s,owner=helm", releaseName),
+			})
+			if err != nil {
+				t.Fatalf("listing helm revisions: %v", err)
+			}
+			max := 0
+			for _, s := range list.Items {
+				if v := s.Labels["version"]; v != "" {
+					if n, err := strconv.Atoi(v); err == nil && n > max {
+						max = n
+					}
+				}
+			}
+			return max
+		}
+
+		childGVR := schema.GroupVersionResource{
+			Resource: "datapresentationazures",
+			Group:    "finops.krateo.io",
+			Version:  "v1alpha1",
+		}
+		childName := "focus-1-focus-data-presentation-azure"
+		childCli := dynamic.NewForConfigOrDie(adminCfg).Resource(childGVR).Namespace(obj.GetNamespace())
+
+		child, err := childCli.Get(ctx, childName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("getting child %q: %v", childName, err)
+		}
+		spec, _, _ := unstructured.NestedMap(child.Object, "spec")
+		if spec == nil {
+			t.Fatalf("child %q has no spec to drift", childName)
+		}
+		// Drift spec.$filter — a top-level scalar the focus CHART renders (from the
+		// composition's spec.filter). It is chart-declared (present in the helm release
+		// manifest), so the 3-way-with-live merge has a declared target to revert to. We
+		// pick it explicitly (not by map iteration) so the test is deterministic. NOTE: on
+		// this platform datapresentationazure's data fields are normally operator-populated;
+		// in this harness there is no finops operator running, so the field's value comes
+		// purely from the chart render — a clean chart-declared drift target.
+		const driftField = "$filter"
+		declaredVal, found, _ := unstructured.NestedString(child.Object, "spec", driftField)
+		if !found {
+			t.Fatalf("child %q has no chart-declared spec.%s to drift; spec=%v", childName, driftField, spec)
+		}
+		t.Logf("[selfheal-drift] child field spec.%s declared value = %q", driftField, declaredVal)
+
+		revBefore := latestRevision()
+		t.Logf("[selfheal-drift] revision before out-of-band drift: %d", revBefore)
+
+		const driftedVal = "DRIFTED-OUT-OF-BAND"
+		if declaredVal == driftedVal {
+			t.Fatalf("declared value already equals the drift sentinel; pick another field")
+		}
+		if err := unstructured.SetNestedField(child.Object, driftedVal, "spec", driftField); err != nil {
+			t.Fatalf("setting drifted field: %v", err)
+		}
+		if _, err := childCli.Update(ctx, child, metav1.UpdateOptions{}); err != nil {
+			t.Fatalf("applying out-of-band drift: %v", err)
+		}
+		got, err := childCli.Get(ctx, childName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("re-getting drifted child: %v", err)
+		}
+		if cur, _, _ := unstructured.NestedString(got.Object, "spec", driftField); cur != driftedVal {
+			t.Fatalf("drift did not land: spec.%s = %q, want %q", driftField, cur, driftedVal)
+		}
+		t.Logf("[selfheal-drift] out-of-band set spec.%s = %q", driftField, driftedVal)
+
+		u, _ = cli.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		observation, err := handler.Observe(ctx, u)
+		if err != nil {
+			t.Fatalf("observe after field drift: %v", err)
+		}
+		if observation.ResourceUpToDate {
+			t.Errorf("expected Observe to report drift (ResourceUpToDate=false) after field drift, got up-to-date")
+		}
+
+		healed, err := childCli.Get(ctx, childName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("getting child after heal: %v", err)
+		}
+		restored, _, _ := unstructured.NestedString(healed.Object, "spec", driftField)
+		if restored != declaredVal {
+			t.Errorf("field drift NOT healed: spec.%s = %q, want declared %q", driftField, restored, declaredVal)
+		} else {
+			t.Logf("[selfheal-drift] spec.%s patched back to declared %q", driftField, declaredVal)
+		}
+
+		revAfterHeal := latestRevision()
+		t.Logf("[selfheal-drift] revision after heal: %d (was %d)", revAfterHeal, revBefore)
+		if revAfterHeal != revBefore+1 {
+			t.Errorf("expected revision to bump exactly once (%d -> %d), got %d", revBefore, revBefore+1, revAfterHeal)
+		}
+
+		for i := 0; i < 3; i++ {
+			u, _ = cli.Get(ctx, obj.GetName(), metav1.GetOptions{})
+			obs, err := handler.Observe(ctx, u)
+			if err != nil {
+				t.Fatalf("steady-state observe #%d: %v", i, err)
+			}
+			if !obs.ResourceUpToDate {
+				t.Errorf("steady-state reconcile #%d unexpectedly reported drift", i)
+			}
+		}
+		revSteady2 := latestRevision()
+		t.Logf("[selfheal-drift] revision after 3 steady reconciles: %d (was %d)", revSteady2, revAfterHeal)
+		if revSteady2 != revAfterHeal {
+			t.Errorf("steady-state reconciles bumped revision: %d -> %d", revAfterHeal, revSteady2)
 		}
 
 		return ctx

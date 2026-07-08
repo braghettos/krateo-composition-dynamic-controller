@@ -310,41 +310,37 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	tpCarrier := map[string]string{}
 	telemetry.InjectTraceparent(ctx, tpCarrier)
 	postrenderLabels.WithTraceparent(tpCarrier[meta.AnnotationKeyTraceparent], tpCarrier[meta.AnnotationKeyTracestate])
-	helmMetrics = metrics.NewHelmMetrics(ctx)
-	// Observe is READ-ONLY: render the upgrade as a server-side dry-run so we obtain the manifest
-	// that a real upgrade WOULD apply (post-renderer runs, templates resolve, the API server
-	// validates) and can compute its digest, but WITHOUT persisting a new helm revision. Previously
-	// this was an unconditional live Upgrade every reconcile (~60s), which created an identical
-	// revision every cycle even at steady state — infinite revision churn and needless API-server
-	// load (upstream krateoplatformops/composition-dynamic-controller#184). The actual mutation is
-	// now performed only when drift is detected: Observe returns ResourceUpToDate:false and the
-	// runtime routes to Update (or Create for a missing release), which runs the live Upgrade.
-	upgradedRel, err := helmMetrics.TimedUpgradeWithResult(func() (*helmconfig.Release, error) {
-		return hc.Upgrade(ctx, releaseName, pkg.URL, &helmconfig.UpgradeConfig{
-			ActionConfig: &helmconfig.ActionConfig{
-				ChartVersion:          pkg.Version,
-				ChartName:             pkg.Repo,
-				Username:              pkg.Auth.Username,
-				Password:              pkg.Auth.Password,
-				InsecureSkipTLSverify: pkg.InsecureSkipTLSverify,
-				Values:                values,
-				PostRenderer:          postrenderLabels,
-				// Adopt an existing child object rather than aborting the whole release when it carries
-				// non-Helm ownership metadata (e.g. a composition instance created/edited out-of-band).
-				// Without this, one un-adoptable child 500s the entire reconcile ("cannot be imported
-				// into the current release: invalid ownership metadata") and wedges the platform (D1,
-				// 2026-07-08); with it the release takes ownership, self-healing the conflict.
-				TakeOwnership:         true,
-				// Server-side dry-run: render + validate against the live cluster without writing a
-				// revision. DryRunServer (not DryRunClient) so CRD-backed children and lookups are
-				// validated exactly as a real upgrade would.
-				DryRun:                helmconfig.DryRunServer,
-			},
-			MaxHistory: helmMaxHistory,
-		})
+	// Self-healing "apply-if-changed" reconcile. Observe is no longer read-only nor an
+	// unconditional live Upgrade (the old behaviour created an identical revision every ~60s cycle
+	// even at steady state — infinite revision churn and needless API-server load, upstream
+	// composition-dynamic-controller#184). Reconcile runs helm's 3-way merge (KubeClient.Update)
+	// through the EXPORTED helm API every cycle: it recreates children deleted out-of-band and
+	// patches drifted fields, converging the cluster — but only writes a new helm revision + runs
+	// hooks when the live cluster was ACTUALLY mutated (a create, delete, or non-empty patch,
+	// detected via resourceVersion bumps rather than helm's over-eager Result.Updated). At steady
+	// state it is a no-op: no revision, no hooks. ResourceUpToDate reflects whether the cluster
+	// already matched the desired state; the digest below is computed for STATUS REPORTING only,
+	// not as an up-to-date gate.
+	reconcileRes, err := hc.Reconcile(ctx, releaseName, pkg.URL, &helmconfig.UpgradeConfig{
+		ActionConfig: &helmconfig.ActionConfig{
+			ChartVersion:          pkg.Version,
+			ChartName:             pkg.Repo,
+			Username:              pkg.Auth.Username,
+			Password:              pkg.Auth.Password,
+			InsecureSkipTLSverify: pkg.InsecureSkipTLSverify,
+			Values:                values,
+			PostRenderer:          postrenderLabels,
+			// Adopt an existing child object rather than aborting the whole release when it carries
+			// non-Helm ownership metadata (e.g. a composition instance created/edited out-of-band).
+			// Without this, one un-adoptable child 500s the entire reconcile ("cannot be imported
+			// into the current release: invalid ownership metadata") and wedges the platform (D1,
+			// 2026-07-08); with it the release takes ownership, self-healing the conflict.
+			TakeOwnership:         true,
+		},
+		MaxHistory: helmMaxHistory,
 	})
 	if err != nil {
-		retErr := fmt.Errorf("rendering helm chart (dry-run): %w", err)
+		retErr := fmt.Errorf("reconciling helm chart: %w", err)
 		condition := condition.Unavailable()
 		condition.Message = retErr.Error()
 		unstructuredtools.SetConditions(mg, condition)
@@ -355,6 +351,10 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 		return controller.ExternalObservation{}, retErr
 	}
 
+	// The reconcile converged the cluster in-place. When it detected a real change it also wrote a
+	// fresh revision (reconcileRes.Release); otherwise Release is the stored release. Report the
+	// current release's digest under status.digest for observability.
+	upgradedRel := reconcileRes.Release
 	digest, err := processor.ComputeReleaseDigest(upgradedRel)
 	if err != nil {
 		return controller.ExternalObservation{}, fmt.Errorf("computing release digest: %w", err)
@@ -364,24 +364,10 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	if err != nil {
 		return controller.ExternalObservation{}, fmt.Errorf("getting previous digest from status: %w", err)
 	}
-	if previousDigest == "" {
-		// Calculate the digest from the previous release if not present in status
-		log.Debug("Previous digest not found in status, calculating from previous release")
-		previousDigest, err = processor.ComputeReleaseDigest(rel)
-		if err != nil {
-			return controller.ExternalObservation{}, fmt.Errorf("computing release digest from previous release: %w", err)
-		}
-	}
-	if digest != previousDigest {
-		log.Debug("Composition out-of-date.", "package", pkg.URL, "current", digest, "expected", previousDigest)
-		return controller.ExternalObservation{
-			ResourceExists:   true,
-			ResourceUpToDate: false,
-		}, nil
-	}
 
-	if rel.ChartVersion != upgradedRel.ChartVersion {
-		log.Debug("Composition package version mismatch.", "package", pkg.URL, "installed", rel.ChartVersion, "expected", pkg.Version)
+	if reconcileRes.Changed {
+		log.Debug("Composition drift detected and self-healed.", "package", pkg.URL,
+			"created", reconcileRes.Created, "deleted", reconcileRes.Deleted, "patched", reconcileRes.PatchedUpdated)
 		return controller.ExternalObservation{
 			ResourceExists:   true,
 			ResourceUpToDate: false,
