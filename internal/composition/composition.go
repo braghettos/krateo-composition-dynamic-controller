@@ -321,6 +321,12 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 				InsecureSkipTLSverify: pkg.InsecureSkipTLSverify,
 				Values:                values,
 				PostRenderer:          postrenderLabels,
+				// Adopt an existing child object rather than aborting the whole release when it carries
+				// non-Helm ownership metadata (e.g. a composition instance created/edited out-of-band).
+				// Without this, one un-adoptable child 500s the entire reconcile ("cannot be imported
+				// into the current release: invalid ownership metadata") and wedges the platform (D1,
+				// 2026-07-08); with it the release takes ownership, self-healing the conflict.
+				TakeOwnership:         true,
 			},
 			MaxHistory: helmMaxHistory,
 		})
@@ -504,6 +510,11 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 		Password:              pkg.Auth.Password,
 		InsecureSkipTLSverify: pkg.InsecureSkipTLSverify,
 		PostRenderer:          postrenderLabels,
+		// Adopt an existing child object rather than aborting the whole release when it carries
+		// non-Helm ownership metadata (out-of-band-created/edited composition instance). Otherwise one
+		// un-adoptable child 500s the entire reconcile and wedges the platform (D1); with it the
+		// release takes ownership and self-heals the conflict.
+		TakeOwnership:         true,
 	}
 
 	// Check if the release already exists before attempting to install, this can happen if the create event is triggered after a failed install
