@@ -6,7 +6,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/go-logr/logr v1.4.3
 	github.com/gobuffalo/flect v1.0.3
-	github.com/krateoplatformops/plumbing v1.7.11
+	github.com/krateoplatformops/plumbing v1.7.12
 	github.com/krateoplatformops/unstructured-runtime v1.1.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0
@@ -168,4 +168,4 @@ replace github.com/krateoplatformops/unstructured-runtime => github.com/braghett
 // gojq-panic fix, crdgen array-default markers, AND the krateo.io/traceparent child-manifest
 // post-render stamping for cross-composition trace propagation. (v1.7.x maintenance line —
 // the divergent v1.8.x fork line dropped slogs/pretty, which unstructured-runtime tests need.)
-replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.7.11
+replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.7.12
