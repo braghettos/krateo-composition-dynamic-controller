@@ -52,7 +52,10 @@ func NewChartInspector(server string) ChartInspector {
 	// off-path stays byte-identical; the unstructured-runtime installs the W3C
 	// propagator unconditionally, so the active reconcile span always propagates.
 	httpcli := &http.Client{
-		Timeout:   60 * time.Second,
+		// Rendering a large umbrella (the installer) is a helm dry-run install + a whole-cluster
+		// Pass-B lookup; on a fully-deployed cluster it takes ~1 min. At 60s this client timed out and
+		// the version upgrade wedged (D9, 2026-07-08). 300s matches chart-inspector's WriteTimeout.
+		Timeout:   300 * time.Second,
 		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	}
 
