@@ -168,4 +168,4 @@ replace github.com/krateoplatformops/unstructured-runtime => github.com/braghett
 // gojq-panic fix, crdgen array-default markers, AND the krateo.io/traceparent child-manifest
 // post-render stamping for cross-composition trace propagation. (v1.7.x maintenance line —
 // the divergent v1.8.x fork line dropped slogs/pretty, which unstructured-runtime tests need.)
-replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.7.7
+replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.7.8
