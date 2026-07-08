@@ -311,6 +311,14 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	telemetry.InjectTraceparent(ctx, tpCarrier)
 	postrenderLabels.WithTraceparent(tpCarrier[meta.AnnotationKeyTraceparent], tpCarrier[meta.AnnotationKeyTracestate])
 	helmMetrics = metrics.NewHelmMetrics(ctx)
+	// Observe is READ-ONLY: render the upgrade as a server-side dry-run so we obtain the manifest
+	// that a real upgrade WOULD apply (post-renderer runs, templates resolve, the API server
+	// validates) and can compute its digest, but WITHOUT persisting a new helm revision. Previously
+	// this was an unconditional live Upgrade every reconcile (~60s), which created an identical
+	// revision every cycle even at steady state — infinite revision churn and needless API-server
+	// load (upstream krateoplatformops/composition-dynamic-controller#184). The actual mutation is
+	// now performed only when drift is detected: Observe returns ResourceUpToDate:false and the
+	// runtime routes to Update (or Create for a missing release), which runs the live Upgrade.
 	upgradedRel, err := helmMetrics.TimedUpgradeWithResult(func() (*helmconfig.Release, error) {
 		return hc.Upgrade(ctx, releaseName, pkg.URL, &helmconfig.UpgradeConfig{
 			ActionConfig: &helmconfig.ActionConfig{
@@ -327,12 +335,16 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 				// into the current release: invalid ownership metadata") and wedges the platform (D1,
 				// 2026-07-08); with it the release takes ownership, self-healing the conflict.
 				TakeOwnership:         true,
+				// Server-side dry-run: render + validate against the live cluster without writing a
+				// revision. DryRunServer (not DryRunClient) so CRD-backed children and lookups are
+				// validated exactly as a real upgrade would.
+				DryRun:                helmconfig.DryRunServer,
 			},
 			MaxHistory: helmMaxHistory,
 		})
 	})
 	if err != nil {
-		retErr := fmt.Errorf("upgrading helm chart: %w", err)
+		retErr := fmt.Errorf("rendering helm chart (dry-run): %w", err)
 		condition := condition.Unavailable()
 		condition.Message = retErr.Error()
 		unstructuredtools.SetConditions(mg, condition)
@@ -622,7 +634,10 @@ func (h *handler) Update(ctx context.Context, mg *unstructured.Unstructured) err
 		return fmt.Errorf("getting package info: %w", err)
 	}
 
-	// Update the helm chart
+	// Update the helm chart. Observe now renders as a dry-run (no revision written), so the live
+	// mutation happens HERE — the runtime routes to Update only when Observe reported drift. Perform
+	// the real Upgrade so the change is actually applied, mirroring the Observe render (same values,
+	// global-value injection, post-render labels + traceparent, TakeOwnership).
 	hc, err := helm.NewClient(h.kubeconfig,
 		helm.WithNamespace(mg.GetNamespace()),
 		helm.WithLogger(h.getHelmLogger(meta.IsVerbose(mg))),
@@ -631,9 +646,41 @@ func (h *handler) Update(ctx context.Context, mg *unstructured.Unstructured) err
 		return fmt.Errorf("creating helm client: %w", err)
 	}
 
-	upgradedRel, err := hc.GetRelease(ctx, releaseName, &helmconfig.GetConfig{})
+	values, err := helmutils.ValuesFromSpec(mg)
 	if err != nil {
-		return fmt.Errorf("getting helm release: %w", err)
+		return fmt.Errorf("getting spec values: %w", err)
+	}
+	err = values.InjectGlobalValues(mg, h.pluralizer, krateoNamespace)
+	if err != nil {
+		return fmt.Errorf("injecting global values: %w", err)
+	}
+	postrenderLabels, err := utils.LabelPostRenderFromSpec(mg, h.pluralizer, krateoNamespace)
+	if err != nil {
+		return fmt.Errorf("creating label post renderer: %w", err)
+	}
+	// Cross-composition trace propagation (see Observe); excluded from the release digest.
+	tpCarrier := map[string]string{}
+	telemetry.InjectTraceparent(ctx, tpCarrier)
+	postrenderLabels.WithTraceparent(tpCarrier[meta.AnnotationKeyTraceparent], tpCarrier[meta.AnnotationKeyTracestate])
+
+	helmMetrics := metrics.NewHelmMetrics(ctx)
+	upgradedRel, err := helmMetrics.TimedUpgradeWithResult(func() (*helmconfig.Release, error) {
+		return hc.Upgrade(ctx, releaseName, pkg.URL, &helmconfig.UpgradeConfig{
+			ActionConfig: &helmconfig.ActionConfig{
+				ChartVersion:          pkg.Version,
+				ChartName:             pkg.Repo,
+				Username:              pkg.Auth.Username,
+				Password:              pkg.Auth.Password,
+				InsecureSkipTLSverify: pkg.InsecureSkipTLSverify,
+				Values:                values,
+				PostRenderer:          postrenderLabels,
+				TakeOwnership:         true,
+			},
+			MaxHistory: helmMaxHistory,
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("upgrading helm chart: %w", err)
 	}
 	if upgradedRel == nil {
 		log.Debug("Release not found after upgrade.")
