@@ -18,9 +18,10 @@ func DecodeUnstructuredRelease(rel *helm.Release) ([]unstructured.Unstructured, 
 	return DecodeRelease[unstructured.Unstructured](rel)
 }
 
-// DecodeRelease parses the release manifest, computes its hash, and returns a slice of objects.
-// Optimization: Uses io.TeeReader to decode and hash in a single synchronous pass.
-// DecodeRelease parses the release manifest, computes its hash, and returns a slice of objects.
+// DecodeRelease returns the release's objects plus a content digest. The digest is computed from
+// the traceparent-stripped manifest (identical to ComputeReleaseDigest) so the value Create/Update
+// store in status.digest matches what Observe compares against; the objects are decoded from the
+// original manifest so they retain their real annotations.
 func DecodeRelease[T any, PT interface {
 	*T
 	MinimalMetaObject
@@ -35,14 +36,20 @@ func DecodeRelease[T any, PT interface {
 
 	h := hasher.NewFNVObjectHash()
 
-	// 2. OPTIMIZATION: Zero-Copy Reader & TeeReader
-	// strings.NewReader creates a read-only view of the string (no allocation).
-	// TeeReader streams bytes to the hasher 'h' automatically as the decoder reads them.
-	tr := io.TeeReader(strings.NewReader(rel.Manifest), h)
+	// 2. Digest: hash the traceparent-STRIPPED manifest, byte-identical to
+	// ComputeReleaseDigest. The digest this returns is stored in status.digest by Create/Update,
+	// and Observe compares against it using ComputeReleaseDigest — the two MUST hash the same
+	// content or every reconcile sees a spurious diff. The per-reconcile krateo.io/traceparent
+	// (+ tracestate) annotations, stamped on EVERY resource including nested *.krateo.io CR
+	// children, change each cycle; stripping them here keeps the digest content-only (no churn).
+	if err := h.SumHashStrings(stripTraceContext(rel.Manifest)); err != nil {
+		return nil, "", err
+	}
 
-	// 3. Decoder Setup
+	// 3. Decoder Setup — decode the ORIGINAL manifest for the returned object list (the objects
+	// must keep their real annotations); only the digest above is computed from the stripped copy.
 	// We use a larger buffer (4096) to reduce read syscalls for large objects
-	decoder := yaml.NewYAMLOrJSONDecoder(tr, 4096)
+	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(rel.Manifest), 4096)
 
 	// Pre-allocate slice. Heuristic: 10 objects prevents resizing for most charts.
 	objects := make([]T, 0, 10)
