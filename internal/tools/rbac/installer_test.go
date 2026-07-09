@@ -1083,6 +1083,60 @@ func TestApplyNamespace_UpdateExisting(t *testing.T) {
 	testenv.Test(t, f)
 }
 
+// TestApplyNamespace_PreservesForeignLabels is the regression guard for the
+// demo-system label-strip churn: when the Namespace already exists and carries
+// labels this installer does not manage (e.g. the postrenderer's
+// krateo.io/composition-* set stamped by Helm), ApplyNamespace must merge its
+// own labels in WITHOUT clobbering the foreign ones. A blind full-PUT of the
+// bare CreateNamespace object used to strip them, and Helm re-added them every
+// reconcile — one helm revision per cycle, forever.
+func TestApplyNamespace_PreservesForeignLabels(t *testing.T) {
+	f := features.New("ApplyNamespace_PreservesForeignLabels").
+		Setup(e2e.Logger("test")).
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			return ctx
+		}).Assess("Foreign composition labels survive a bare apply", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		dyn := dynamic.NewForConfigOrDie(cfg.Client().RESTConfig())
+
+		installer := &RBACInstaller{DynamicClient: dyn}
+
+		// Simulate the Helm-owned namespace: created by the chart + postrenderer
+		// with a krateo.io/composition-* label the RBAC installer knows nothing about.
+		helmOwned := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-namespace-foreign",
+				Labels: map[string]string{
+					"krateo.io/composition-id": "abc123",
+				},
+			},
+		}
+		if _, err := installer.ApplyNamespace(context.Background(), helmOwned); err != nil {
+			t.Fatalf("expected no error seeding helm-owned namespace, got %v", err)
+		}
+
+		// The RBAC installer's own view: only the managed-by label (see CreateNamespace).
+		bare := CreateNamespace("test-namespace-foreign", "some-release", "krateo-system")
+
+		result, err := installer.ApplyNamespace(context.Background(), bare)
+		if err != nil {
+			t.Fatalf("expected no error applying bare namespace, got %v", err)
+		}
+
+		// Our label must be present...
+		if result.Labels["app.kubernetes.io/managed-by"] != "Helm" {
+			t.Errorf("expected managed-by=Helm to be merged in, got %q", result.Labels["app.kubernetes.io/managed-by"])
+		}
+		// ...AND the foreign composition label must NOT have been stripped.
+		if result.Labels["krateo.io/composition-id"] != "abc123" {
+			t.Errorf("foreign label krateo.io/composition-id was stripped: got %q, want abc123", result.Labels["krateo.io/composition-id"])
+		}
+
+		return ctx
+	}).Feature()
+
+	testenv.Test(t, f)
+}
+
 func TestApplyNamespace_InvalidName(t *testing.T) {
 	f := features.New("ApplyNamespace_InvalidName").
 		Setup(e2e.Logger("test")).

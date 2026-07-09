@@ -6,7 +6,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/go-logr/logr v1.4.3
 	github.com/gobuffalo/flect v1.0.3
-	github.com/krateoplatformops/plumbing v1.7.15
+	github.com/krateoplatformops/plumbing v1.10.0
 	github.com/krateoplatformops/unstructured-runtime v1.1.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0
@@ -160,12 +160,13 @@ require (
 // Use the braghettos fork of unstructured-runtime: create-pending Observe-before-refuse
 // recovery (#2), jq-based statusprojection (#3), the shared OTel JSON log handler
 // NewOTelJSONHandler (#4), AND the OTel metrics-resource attrs + trace pipeline / reconcile
-// span (#5) -- unified in tag v1.3.0.
+// span (#5, tag v1.3.0). v1.3.1 drops the plumbing/slogs/pretty test dependency so the module
+// builds against plumbing's current main line.
 // The fork keeps the upstream module path, so pin it via replace.
-replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.3.0
+replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.3.1
 
-// Source plumbing from the braghettos fork (v1.7.7): carries the jqutil int64/int32
-// gojq-panic fix, crdgen array-default markers, AND the krateo.io/traceparent child-manifest
-// post-render stamping for cross-composition trace propagation. (v1.7.x maintenance line —
-// the divergent v1.8.x fork line dropped slogs/pretty, which unstructured-runtime tests need.)
-replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.7.15
+// Source plumbing from the braghettos fork (v1.10.0, main line): carries the jqutil int64/int32
+// gojq-panic fix, crdgen array-default markers, the krateo.io/traceparent child-manifest
+// post-render stamping for cross-composition trace propagation, AND the fork-free
+// apply-if-changed reconcile with semantic change-detection that this controller drives.
+replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.10.0
