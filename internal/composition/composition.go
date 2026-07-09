@@ -51,6 +51,13 @@ import (
 var (
 	krateoNamespace = env.String(krateoNamespaceEnvVar, krateoNamespaceDefault)
 	helmMaxHistory  = env.Int(helmMaxHistoryEnvvar, 3)
+	// pendingOperationGrace: a helm release found in a pending-* status is rolled back ONLY if it
+	// has been pending LONGER than this — i.e. genuinely stuck (the controller died mid-operation),
+	// not legitimately in-flight. A large composition's upgrade (hundreds of children + hooks) can
+	// stay pending for tens of seconds; rolling that back mid-flight caused an Upgrade<->Rollback
+	// thrash on the 319-resource portal composition. Default 5m (>= helm's default op timeout), so
+	// only operations that exceeded a real upgrade are treated as stuck. Tunable per deployment.
+	pendingOperationGrace = env.Duration(pendingGraceEnvvar, 5*time.Minute)
 )
 
 const (
@@ -64,6 +71,7 @@ const (
 	// Environment variables
 	helmMaxHistoryEnvvar  = "HELM_MAX_HISTORY"
 	krateoNamespaceEnvVar = "KRATEO_NAMESPACE"
+	pendingGraceEnvvar    = "COMPOSITION_CONTROLLER_PENDING_GRACE"
 
 	// Default namespace for Krateo Installation
 	krateoNamespaceDefault = "krateo-system"
@@ -226,8 +234,26 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 	}
 
 	if rel.Status == helmconfig.StatusPendingInstall || rel.Status == helmconfig.StatusPendingUpgrade || rel.Status == helmconfig.StatusPendingRollback {
-		log.Debug("Composition stuck install or upgrade in progress. Rolling back to previous release before re-attempting.")
-		// Rollback to previous release
+		// A pending status means a helm operation is in flight OR its process died mid-flight — helm
+		// labels both the same and never re-labels a crash. Status alone can't tell them apart, so we
+		// use how long it has been pending (rel.Updated = helm Info.LastDeployed). A LARGE composition's
+		// upgrade (hundreds of children + hooks) legitimately stays pending for tens of seconds; the old
+		// unconditional rollback reverted such in-flight operations mid-flight (even rolling back a
+		// pending-rollback), which — with the reconcile re-enqueue cadence — produced an Upgrade<->Rollback
+		// thrash on the 319-resource portal composition.
+		pendingFor := time.Since(rel.Updated)
+		if pendingFor < pendingOperationGrace {
+			// Recent => legitimately in flight. Do NOT roll it back and do NOT start a concurrent
+			// operation; report up-to-date so the in-flight op settles and the next reconcile proceeds.
+			log.Debug("Release operation in progress; waiting for it to settle.",
+				"status", string(rel.Status), "pendingFor", pendingFor.String())
+			return controller.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
+		}
+		// Pending longer than any real operation => genuinely stuck (e.g. controller died mid-op). Roll
+		// back once to clear the stale pending lock so a fresh upgrade can proceed (helm refuses to
+		// upgrade a release that is stuck pending).
+		log.Debug("Composition stuck in a pending helm operation past the grace period; rolling back to clear it.",
+			"status", string(rel.Status), "pendingFor", pendingFor.String(), "grace", pendingOperationGrace.String())
 		rel, err = hc.Rollback(ctx, releaseName, &helmconfig.RollbackConfig{
 			MaxHistory:     helmMaxHistory,
 			ReleaseVersion: rel.Revision,
@@ -339,7 +365,7 @@ func (h *handler) Observe(ctx context.Context, mg *unstructured.Unstructured) (c
 			// Without this, one un-adoptable child 500s the entire reconcile ("cannot be imported
 			// into the current release: invalid ownership metadata") and wedges the platform (D1,
 			// 2026-07-08); with it the release takes ownership, self-healing the conflict.
-			TakeOwnership:         true,
+			TakeOwnership: true,
 		},
 		MaxHistory: helmMaxHistory,
 	})
@@ -516,7 +542,7 @@ func (h *handler) Create(ctx context.Context, mg *unstructured.Unstructured) err
 		// non-Helm ownership metadata (out-of-band-created/edited composition instance). Otherwise one
 		// un-adoptable child 500s the entire reconcile and wedges the platform (D1); with it the
 		// release takes ownership and self-heals the conflict.
-		TakeOwnership:         true,
+		TakeOwnership: true,
 	}
 
 	// Check if the release already exists before attempting to install, this can happen if the create event is triggered after a failed install

@@ -72,11 +72,6 @@ func (i *RBACInstaller) ApplyRBAC(rbac *RBAC) error {
 }
 
 func (r *RBACInstaller) ApplyNamespace(ctx context.Context, namespace *corev1.Namespace) (*corev1.Namespace, error) {
-	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert Namespace to unstructured: %w", err)
-	}
-	u := &unstructured.Unstructured{Object: m}
 	cli := r.DynamicClient.Resource(
 		schema.GroupVersionResource{
 			Group:    "",
@@ -85,14 +80,18 @@ func (r *RBACInstaller) ApplyNamespace(ctx context.Context, namespace *corev1.Na
 		},
 	)
 
-	if _, err := cli.Get(ctx, namespace.Name, metav1.GetOptions{}); errors.IsNotFound(err) {
-		res, err := cli.Create(ctx, u, metav1.CreateOptions{})
+	existingU, err := cli.Get(ctx, namespace.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert Namespace to unstructured: %w", err)
+		}
+		res, err := cli.Create(ctx, &unstructured.Unstructured{Object: m}, metav1.CreateOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to Create Namespace: %w", err)
 		}
 		namespace = &corev1.Namespace{}
-		err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, namespace)
-		if err != nil {
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, namespace); err != nil {
 			return nil, fmt.Errorf("failed to convert unstructured to Namespace: %w", err)
 		}
 		return namespace, nil
@@ -100,13 +99,53 @@ func (r *RBACInstaller) ApplyNamespace(ctx context.Context, namespace *corev1.Na
 		return nil, fmt.Errorf("failed to Get Namespace: %w", err)
 	}
 
-	res, err := cli.Update(ctx, u, metav1.UpdateOptions{})
+	// The Namespace already exists. It may be owned by the composition's Helm
+	// release (e.g. the portal's demo-system, declared as a chart child), in
+	// which case its metadata carries foreign labels such as the postrenderer's
+	// krateo.io/composition-* set. A blind full-PUT of our freshly-built object
+	// would replace metadata.labels and strip those, so helm re-adds them on the
+	// next reconcile — an endless label tug-of-war that bumps a helm revision
+	// every cycle. Instead merge our labels/annotations INTO the existing object
+	// (like ApplyRole does for rules) and only Update when something is missing.
+	existing := &corev1.Namespace{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(existingU.Object, existing); err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to Namespace: %w", err)
+	}
+
+	modified := false
+	if len(namespace.Labels) > 0 && existing.Labels == nil {
+		existing.Labels = map[string]string{}
+	}
+	for k, v := range namespace.Labels {
+		if existing.Labels[k] != v {
+			existing.Labels[k] = v
+			modified = true
+		}
+	}
+	if len(namespace.Annotations) > 0 && existing.Annotations == nil {
+		existing.Annotations = map[string]string{}
+	}
+	for k, v := range namespace.Annotations {
+		if existing.Annotations[k] != v {
+			existing.Annotations[k] = v
+			modified = true
+		}
+	}
+
+	if !modified {
+		return existing, nil
+	}
+
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(existing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Namespace to unstructured: %w", err)
+	}
+	res, err := cli.Update(ctx, &unstructured.Unstructured{Object: m}, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to Update Namespace: %w", err)
 	}
 	namespace = &corev1.Namespace{}
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, namespace)
-	if err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, namespace); err != nil {
 		return nil, fmt.Errorf("failed to convert unstructured to Namespace: %w", err)
 	}
 	return namespace, nil
