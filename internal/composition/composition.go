@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/unstructured/condition"
@@ -39,7 +40,10 @@ import (
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/tools/statusprojection"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 )
@@ -794,6 +798,24 @@ func (h *handler) Delete(ctx context.Context, mg *unstructured.Unstructured) err
 		return nil
 	}
 
+	// GVK version-migration handover. When a composition's chart version is bumped, its CR's
+	// apiVersion (composition.krateo.io/v<ver>) changes, so the umbrella prunes the old-GVK CR
+	// and creates a new-GVK one — both bound (via the stable krateo.io/release-name label) to the
+	// SAME helm release. This Delete fires for the pruned old-GVK CR. Uninstalling here would
+	// destroy the release and its stateful children (e.g. ClickHouse/Keeper -> a fresh reinstall
+	// that re-rolls them into ZK-auth staleness). Instead, detect the handover and skip the
+	// uninstall: the new-version controller's Reconcile is install-or-upgrade, so it upgrades the
+	// surviving release IN PLACE (helm upgrade, not uninstall+install). We detect it race-free via
+	// the owning CompositionDefinition, whose spec.chart.version is bumped to the new version
+	// BEFORE the old CR is pruned: CD present AND CD.version != this CR's version => migration.
+	if handover, herr := h.isVersionMigrationHandover(ctx, dyn, mg); herr != nil {
+		log.Debug("could not determine version-migration handover; proceeding with uninstall", "err", herr)
+	} else if handover {
+		log.Info("GVK version-migration handover detected; skipping uninstall so the new-version controller upgrades the release in place", "release", releaseName)
+		h.eventRecorder.Event(mg, event.Normal(reasonDeleted, "Delete", fmt.Sprintf("GVK migration: release %s handed over to the new version for in-place helm upgrade; uninstall skipped", releaseName)))
+		return nil
+	}
+
 	helmMetrics := metrics.NewHelmMetrics(ctx)
 	err = helmMetrics.TimedUninstall(func() error {
 		return hc.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{
@@ -854,6 +876,59 @@ func (h *handler) Delete(ctx context.Context, mg *unstructured.Unstructured) err
 	}
 
 	return nil
+}
+
+// isVersionMigrationHandover reports whether this composition CR is being deleted as part of a
+// chart-version bump (its GVK changing v<old> -> v<new>) rather than a genuine removal, in which
+// case the helm release must survive for the new-version controller to upgrade in place.
+//
+// It reads the CR's own labels (set by the umbrella/cdc): the owning CompositionDefinition's GVR
+// + name (krateo.io/composition-definition-{group,version,resource,name}[,namespace]) and this
+// CR's version (krateo.io/composition-version, e.g. "v0-1-7"). It GETs that CompositionDefinition
+// and compares its spec.chart.version (normalized "0.1.8" -> "v0-1-8") to the CR's version:
+//   - CD absent (NotFound): the component is genuinely being removed -> NOT a handover (uninstall).
+//   - CD present and its version == the CR's version: no migration -> NOT a handover (uninstall).
+//   - CD present and its version != the CR's version: the definition already advanced to the new
+//     version while this old-version CR is pruned -> handover (skip uninstall).
+//
+// This is race-free regardless of whether the new CR is created before or after the old is pruned,
+// because the CompositionDefinition's version is advanced before the prune. On any missing label or
+// lookup error it returns false so the caller falls back to the safe default (uninstall).
+func (h *handler) isVersionMigrationHandover(ctx context.Context, dyn dynamic.Interface, mg *unstructured.Unstructured) (bool, error) {
+	labels := mg.GetLabels()
+	if labels == nil {
+		return false, nil
+	}
+	cdName := labels["krateo.io/composition-definition-name"]
+	cdResource := labels["krateo.io/composition-definition-resource"]
+	cdGroup := labels["krateo.io/composition-definition-group"]
+	cdVersion := labels["krateo.io/composition-definition-version"]
+	cdNamespace := labels["krateo.io/composition-definition-namespace"]
+	crVersion := labels["krateo.io/composition-version"]
+	if cdName == "" || cdResource == "" || cdVersion == "" || crVersion == "" {
+		return false, nil
+	}
+
+	gvr := schema.GroupVersionResource{Group: cdGroup, Version: cdVersion, Resource: cdResource}
+	var ri dynamic.ResourceInterface = dyn.Resource(gvr)
+	if cdNamespace != "" {
+		ri = dyn.Resource(gvr).Namespace(cdNamespace)
+	}
+	cd, err := ri.Get(ctx, cdName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	chartVersion, _, _ := unstructured.NestedString(cd.Object, "spec", "chart", "version")
+	if chartVersion == "" {
+		return false, nil
+	}
+	// Normalize the semver chart version ("0.1.8") to the CR's version-label form ("v0-1-8").
+	cdVersionLabel := "v" + strings.ReplaceAll(chartVersion, ".", "-")
+	return cdVersionLabel != crVersion, nil
 }
 
 func (h *handler) getHelmLogger(verbose bool) func(format string, v ...interface{}) {
