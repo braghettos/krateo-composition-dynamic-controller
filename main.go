@@ -104,6 +104,9 @@ func main() {
 		env.Int("COMPOSITION_CONTROLLER_MAX_ERROR_RETRIES", 5), "How many times to retry the processing of a resource when an error occurs before giving up and dropping the resource.")
 	metricsServerPort := flag.Int("metrics-server-port",
 		env.Int("COMPOSITION_CONTROLLER_METRICS_SERVER_PORT", 0), "The address to bind the metrics server to. If empty, metrics server is disabled.")
+	gracefulShutdownTimeout := flag.Duration("graceful-shutdown-timeout",
+		env.Duration("COMPOSITION_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT", 30*time.Second),
+		"Max time to let in-flight reconciles finish after SIGTERM before the process exits. Must be set below the pod's terminationGracePeriodSeconds. 0 disables the drain (abrupt shutdown); negative waits indefinitely.")
 	safeReleaseName := flag.Bool("safe-release-name",
 		env.Bool("COMPOSITION_CONTROLLER_SAFE_RELEASE_NAME", true), "If disabled the randmom suffix is not appended in the Helm release name. This can be useful for avoid having problems with complex helm charts. The use of this option is highly discouraged, as it can lead to release name collisions.")
 	otelEnabled := flag.Bool("otel-enabled", env.Bool("OTEL_ENABLED", false), "Enable OTLP metrics export for provider-runtime telemetry.")
@@ -338,6 +341,7 @@ func main() {
 		builder.WithResyncInterval(*resyncInterval),
 		builder.WithGlobalRateLimiter(workqueue.NewExponentialTimedFailureRateLimiter[any](*minErrorRetryInterval, *maxErrorRetryInterval)),
 		builder.WithMaxRetries(*maxErrorRetry),
+		builder.WithGracefulShutdownTimeout(*gracefulShutdownTimeout),
 		builder.WithListWatcher(controller.ListWatcherConfiguration{
 			LabelSelector: ptr.To(labelselector.String()),
 		}),

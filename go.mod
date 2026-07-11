@@ -163,7 +163,7 @@ require (
 // span (#5, tag v1.3.0). v1.3.1 drops the plumbing/slogs/pretty test dependency so the module
 // builds against plumbing's current main line.
 // The fork keeps the upstream module path, so pin it via replace.
-replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.3.1
+replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.3.2
 
 // Source plumbing from the braghettos fork (v1.10.0, main line): carries the jqutil int64/int32
 // gojq-panic fix, crdgen array-default markers, the krateo.io/traceparent child-manifest
