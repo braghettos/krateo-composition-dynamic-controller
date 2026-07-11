@@ -118,8 +118,12 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	go.opentelemetry.io/contrib/bridges/otelslog v0.19.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.20.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0 // indirect
+	go.opentelemetry.io/otel/log v0.20.0 // indirect
+	go.opentelemetry.io/otel/sdk/log v0.20.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
@@ -163,10 +167,10 @@ require (
 // span (#5, tag v1.3.0). v1.3.1 drops the plumbing/slogs/pretty test dependency so the module
 // builds against plumbing's current main line.
 // The fork keeps the upstream module path, so pin it via replace.
-replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.3.2
+replace github.com/krateoplatformops/unstructured-runtime => github.com/braghettos/unstructured-runtime v1.3.4
 
 // Source plumbing from the braghettos fork (v1.10.0, main line): carries the jqutil int64/int32
 // gojq-panic fix, crdgen array-default markers, the krateo.io/traceparent child-manifest
 // post-render stamping for cross-composition trace propagation, AND the fork-free
 // apply-if-changed reconcile with semantic change-detection that this controller drives.
-replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.10.3
+replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.10.5

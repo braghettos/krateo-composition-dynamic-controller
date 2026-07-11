@@ -111,6 +111,7 @@ func main() {
 		env.Bool("COMPOSITION_CONTROLLER_SAFE_RELEASE_NAME", true), "If disabled the randmom suffix is not appended in the Helm release name. This can be useful for avoid having problems with complex helm charts. The use of this option is highly discouraged, as it can lead to release name collisions.")
 	otelEnabled := flag.Bool("otel-enabled", env.Bool("OTEL_ENABLED", false), "Enable OTLP metrics export for provider-runtime telemetry.")
 	otelTracingEnabled := flag.Bool("otel-tracing-enabled", env.Bool("OTEL_TRACING_ENABLED", false), "Enable OTLP trace export (distributed reconcile traces).")
+	otelLogsEnabled := flag.Bool("otel-logs-enabled", env.Bool("OTEL_LOGS_ENABLED", false), "Enable OTLP log export (logs as a first-class OTel signal, in addition to the stderr JSON stream).")
 	otelServiceName := flag.String("otel-service-name", serviceName, "The service name attached to exported OTLP metrics/traces.")
 	otelExportInterval := flag.Duration("otel-export-interval", env.Duration("OTEL_EXPORT_INTERVAL", defaultOtelExportInterval), "The interval used to export OTLP metrics.")
 	deploymentName := flag.String("deployment-name", env.String("DEPLOYMENT_NAME", ""), "The deployment name for stable resource identification in metrics.")
@@ -132,17 +133,35 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 
-	// JSON logs on stderr in the OTel log model (RFC3339Nano "timestamp", SeverityText +
-	// SeverityNumber, trace_id/span_id when a span is in context), compatible with logs-ingester.
-	// The shared handler lives in unstructured-runtime (pkg/logging) so every composition
-	// controller is consistent; "service" is kept alongside the OTel "service.name" during the
-	// transition. See docs/logs-ingester-compatibility.md.
-	sl := slog.New(logging.NewOTelJSONHandler(logLevel, os.Stderr,
-		slog.String("service.name", serviceName),
-		slog.String("service", serviceName),
-	))
+	// Tag this controller's telemetry resource with the composition TYPE it manages
+	// (krateo.io/composition-gvr); appended to OTEL_RESOURCE_ATTRIBUTES so resource.Default() picks it
+	// up — shared by the metrics, trace AND log resources. Set BEFORE any exporter/handler is built.
+	gvrAttr := fmt.Sprintf("krateo.io/composition-gvr=%s/%s/%s", *resourceGroup, *resourceVersion, *resourceName)
+	if existing := os.Getenv("OTEL_RESOURCE_ATTRIBUTES"); existing != "" {
+		gvrAttr = existing + "," + gvrAttr
+	}
+	os.Setenv("OTEL_RESOURCE_ATTRIBUTES", gvrAttr)
 
-	log := logging.NewLogrLogger(logr.FromSlogHandler(sl.Handler()))
+	// Install the OTLP LoggerProvider BEFORE building the log handler so its otelslog bridge captures
+	// it and log records export over OTLP (gated OTEL_LOGS_ENABLED). No app logger exists yet, so a
+	// bootstrap error goes to the stdlib logger.
+	logsShutdown, err := telemetry.SetupOTLPLogs(context.Background(), *otelLogsEnabled, *otelServiceName)
+	if err != nil {
+		log.Printf("cannot initialize OpenTelemetry logs: %v", err)
+		os.Exit(1)
+	}
+
+	// JSON logs on stderr in the OTel log model (RFC3339Nano "timestamp", SeverityText +
+	// SeverityNumber, trace_id/span_id when a span is in context), compatible with logs-ingester, AND
+	// — when OTEL_LOGS_ENABLED — teed to the OTLP pipeline. The shared handler lives in
+	// unstructured-runtime (pkg/logging) so every composition controller is consistent.
+	log := logging.NewLogrLogger(logr.FromSlogHandler(logging.NewOTelHandler(logLevel, os.Stderr, *otelServiceName)))
+
+	defer func() {
+		if err := logsShutdown(context.Background()); err != nil {
+			log.Error(err, "Cannot shutdown OpenTelemetry logs")
+		}
+	}()
 
 	// Parse the declarative status projections shipped from the CompositionDefinition.
 	// An invalid value is non-fatal: status projection is simply disabled (baseline status
@@ -178,7 +197,6 @@ func main() {
 
 	// Kubernetes configuration
 	var cfg *rest.Config
-	var err error
 	if len(*kubeconfig) > 0 {
 		cfg, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	} else {
@@ -239,16 +257,6 @@ func main() {
 
 	telemetryEnabled := *otelEnabled
 	telemetryExportInterval := *otelExportInterval
-
-	// Tag this controller's telemetry resource with the composition TYPE it manages
-	// (krateo.io/composition-gvr); the per-instance composition-id rides on the reconcile span
-	// + plumbing's child labels. Appended to OTEL_RESOURCE_ATTRIBUTES so resource.Default()
-	// picks it up — shared by both the metrics and trace resources.
-	gvrAttr := fmt.Sprintf("krateo.io/composition-gvr=%s/%s/%s", *resourceGroup, *resourceVersion, *resourceName)
-	if existing := os.Getenv("OTEL_RESOURCE_ATTRIBUTES"); existing != "" {
-		gvrAttr = existing + "," + gvrAttr
-	}
-	os.Setenv("OTEL_RESOURCE_ATTRIBUTES", gvrAttr)
 
 	telemetryConfig := telemetry.Config{
 		Enabled:        telemetryEnabled,
