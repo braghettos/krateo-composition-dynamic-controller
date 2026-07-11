@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/krateoplatformops/plumbing/labels"
 	"github.com/krateoplatformops/unstructured-runtime/pkg/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -12,19 +13,15 @@ import (
 )
 
 const (
-	// Labels for Krateo Composition
-	//
-	// CROSS-REPO CONTRACT: CompositionDefinitionNameLabel, CompositionDefinitionNamespaceLabel and
-	// CompositionVersionLabel are declared INDEPENDENTLY here and in core-provider's
-	// internal/tools/deploy/deploy.go (core-provider does not import this module). The three
-	// strings MUST stay byte-identical: if they drift, owner-scoped version migration silently
-	// selects nothing and leaves composition instances orphaned. Edit one → edit both.
-	CompositionDefinitionNameLabel      = "krateo.io/composition-definition-name"
-	CompositionDefinitionNamespaceLabel = "krateo.io/composition-definition-namespace"
-	CompositionDefinitionGroupLabel     = "krateo.io/composition-definition-group"
-	CompositionDefinitionVersionLabel   = "krateo.io/composition-definition-version"
-	CompositionDefinitionResourceLabel  = "krateo.io/composition-definition-resource"
-	CompositionVersionLabel             = "krateo.io/composition-version"
+	// Composition label keys re-exported from plumbing/labels — the single shared source of truth with
+	// core-provider (compile-time identical, no cross-repo drift). If they disagreed, owner-scoped
+	// version migration would silently select nothing and orphan composition instances.
+	CompositionDefinitionNameLabel      = labels.CompositionDefinitionNameLabel
+	CompositionDefinitionNamespaceLabel = labels.CompositionDefinitionNamespaceLabel
+	CompositionDefinitionGroupLabel     = labels.CompositionDefinitionGroupLabel
+	CompositionDefinitionVersionLabel   = labels.CompositionDefinitionVersionLabel
+	CompositionDefinitionResourceLabel  = labels.CompositionDefinitionResourceLabel
+	CompositionVersionLabel             = labels.CompositionVersionLabel
 
 	// ReleaseNameLabel is the label used to identify the release name of a Helm chart that can be different from the name of the resource.
 	ReleaseNameLabel = "krateo.io/release-name"
