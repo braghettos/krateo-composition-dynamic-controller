@@ -173,4 +173,4 @@ replace github.com/krateoplatformops/unstructured-runtime => github.com/braghett
 // gojq-panic fix, crdgen array-default markers, the krateo.io/traceparent child-manifest
 // post-render stamping for cross-composition trace propagation, AND the fork-free
 // apply-if-changed reconcile with semantic change-detection that this controller drives.
-replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.10.5
+replace github.com/krateoplatformops/plumbing => github.com/braghettos/plumbing v1.10.6
