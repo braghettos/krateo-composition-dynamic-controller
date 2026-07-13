@@ -315,20 +315,73 @@ func (g *dynamicGetter) searchCompositionDefinition(gvr schema.GroupVersionResou
 
 	compositionDefinition := &all.Items[0]
 	if tot > 1 {
+		instanceLabels := mg.GetLabels()
 		found := false
-		for _, el := range all.Items {
-			version, kind, err := getChartVersionKind(&el)
-			if err != nil {
-				g.logger.Debug("Failed to get chart version and kind", "error", err.Error(), "compositionDefinitionName", el.GetName(), "compositionDefinitionNamespace", el.GetNamespace(), "gvr", gvr.String())
-				continue
+
+		// 1. Authoritative: the definition-ref labels stamped on the composition instance.
+		// These identify the owning CompositionDefinition by name+namespace and survive
+		// chart-version bumps, unlike the composition-version label which is only migrated
+		// by a successful reconcile.
+		refName := instanceLabels[compositionMeta.CompositionDefinitionNameLabel]
+		refNamespace := instanceLabels[compositionMeta.CompositionDefinitionNamespaceLabel]
+		if refName != "" && refNamespace != "" {
+			for i := range all.Items {
+				el := &all.Items[i]
+				if el.GetName() == refName && el.GetNamespace() == refNamespace {
+					compositionDefinition = el
+					g.logger.Debug("Resolved composition definition via definition-ref labels", "compositionDefinitionName", refName, "compositionDefinitionNamespace", refNamespace, "gvr", gvr.String())
+					found = true
+					break
+				}
 			}
-			if version == mg.GetLabels()[compositionMeta.CompositionVersionLabel] && kind == mg.GetKind() {
-				compositionDefinition = &el
-				g.logger.Debug("Found matching composition definition", "compositionDefinitionName", el.GetName(), "compositionDefinitionNamespace", el.GetNamespace(), "gvr", gvr.String())
-				found = true
-				break
+			if !found {
+				// Stale labels are possible: fall through to version/kind matching.
+				g.logger.Debug("Definition-ref labels did not match any composition definition, falling back to version/kind matching", "compositionDefinitionName", refName, "compositionDefinitionNamespace", refNamespace, "gvr", gvr.String())
 			}
 		}
+
+		// 2. Exact match on chart version + kind (previous behavior).
+		if !found {
+			for i := range all.Items {
+				el := &all.Items[i]
+				version, kind, err := getChartVersionKind(el)
+				if err != nil {
+					g.logger.Debug("Failed to get chart version and kind", "error", err.Error(), "compositionDefinitionName", el.GetName(), "compositionDefinitionNamespace", el.GetNamespace(), "gvr", gvr.String())
+					continue
+				}
+				if version == instanceLabels[compositionMeta.CompositionVersionLabel] && kind == mg.GetKind() {
+					compositionDefinition = el
+					g.logger.Debug("Found matching composition definition", "compositionDefinitionName", el.GetName(), "compositionDefinitionNamespace", el.GetNamespace(), "gvr", gvr.String())
+					found = true
+					break
+				}
+			}
+		}
+
+		// 3. Last resort: a single definition serving this kind. During a chart-version bump
+		// the definition's status version moves ahead of the instance's composition-version
+		// label (which only a successful reconcile would migrate), so an exact version match
+		// can never succeed and reconciliation wedges. Tolerate the skew when the owner is
+		// unambiguous.
+		if !found {
+			var sameKind []*unstructured.Unstructured
+			for i := range all.Items {
+				el := &all.Items[i]
+				_, kind, err := getChartVersionKind(el)
+				if err != nil {
+					continue
+				}
+				if kind == mg.GetKind() {
+					sameKind = append(sameKind, el)
+				}
+			}
+			if len(sameKind) == 1 {
+				compositionDefinition = sameKind[0]
+				g.logger.Warn("Resolved composition definition by unique kind, tolerating composition-version label skew", "compositionDefinitionName", compositionDefinition.GetName(), "compositionDefinitionNamespace", compositionDefinition.GetNamespace(), "expectedVersion", instanceLabels[compositionMeta.CompositionVersionLabel], "kind", mg.GetKind(), "gvr", gvr.String())
+				found = true
+			}
+		}
+
 		if !found {
 			return nil,
 				fmt.Errorf("too many definitions [%d] found for '%v' in namespace: %s", tot, gvr.String(), mg.GetNamespace())
