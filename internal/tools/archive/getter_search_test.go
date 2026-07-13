@@ -103,6 +103,20 @@ func TestSearchCompositionDefinition(t *testing.T) {
 			wantName: "portal",
 		},
 		{
+			// (b ter) Kind guard: the ref labels point at an EXISTING CD that serves a
+			// DIFFERENT kind (mislabeled instance, name reuse after delete/recreate).
+			// Trusting the labels would fetch the wrong chart: fall through to the exact
+			// version+kind match on the true owner instead.
+			name: "ref labels pointing at a different-kind definition fall through to exact match",
+			definitions: []*unstructured.Unstructured{
+				newSearchTestCD("portal", "krateo-system", "v1-5-11", "OtherApp"),
+				newSearchTestCD("true-owner", "krateo-system", "v1-5-11", "FireworksApp"),
+			},
+			instance: newSearchTestComposition("FireworksApp", "v1-5-11",
+				definitionRefLabels("portal", "krateo-system")),
+			wantName: "true-owner",
+		},
+		{
 			// (c) Version-bump wedge: label says v1-5-11, CD moved to v1-5-12, no ref labels.
 			// Exactly one CD serves the kind -> unique-kind fallback unwedges the migration.
 			name: "unique-kind fallback tolerates version skew without ref labels",

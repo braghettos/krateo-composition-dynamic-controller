@@ -325,16 +325,28 @@ func (g *dynamicGetter) searchCompositionDefinition(gvr schema.GroupVersionResou
 		refName := instanceLabels[compositionMeta.CompositionDefinitionNameLabel]
 		refNamespace := instanceLabels[compositionMeta.CompositionDefinitionNamespaceLabel]
 		if refName != "" && refNamespace != "" {
+			refMatched := false
 			for i := range all.Items {
 				el := &all.Items[i]
-				if el.GetName() == refName && el.GetNamespace() == refNamespace {
-					compositionDefinition = el
-					g.logger.Debug("Resolved composition definition via definition-ref labels", "compositionDefinitionName", refName, "compositionDefinitionNamespace", refNamespace, "gvr", gvr.String())
-					found = true
+				if el.GetName() != refName || el.GetNamespace() != refNamespace {
+					continue
+				}
+				refMatched = true
+				// The ref labels identify the owner by name+namespace only: guard against
+				// them pointing at a definition serving a DIFFERENT kind (mislabeled
+				// instance, name reuse after delete/recreate), which would fetch the
+				// wrong chart. An unreadable status kind is treated as a mismatch.
+				_, kind, kindErr := getChartVersionKind(el)
+				if kindErr != nil || kind != mg.GetKind() {
+					g.logger.Warn("Definition-ref labels point at a composition definition of a different kind, falling back to version/kind matching", "compositionDefinitionName", refName, "compositionDefinitionNamespace", refNamespace, "expectedKind", mg.GetKind(), "foundKind", kind, "gvr", gvr.String())
 					break
 				}
+				compositionDefinition = el
+				g.logger.Debug("Resolved composition definition via definition-ref labels", "compositionDefinitionName", refName, "compositionDefinitionNamespace", refNamespace, "gvr", gvr.String())
+				found = true
+				break
 			}
-			if !found {
+			if !refMatched {
 				// Stale labels are possible: fall through to version/kind matching.
 				g.logger.Debug("Definition-ref labels did not match any composition definition, falling back to version/kind matching", "compositionDefinitionName", refName, "compositionDefinitionNamespace", refNamespace, "gvr", gvr.String())
 			}
